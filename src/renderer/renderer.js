@@ -555,6 +555,112 @@ function signaturePayload(select, input) {
   };
 }
 
+function onrCertificateLabel(certificate) {
+  const brazil = certificate.pkiBrazil || {};
+  const identifier = brazil.cpf || brazil.cnpj || "";
+  const expiration = certificate.validityEnd
+    ? new Date(certificate.validityEnd).toLocaleDateString("pt-BR")
+    : "";
+  return [certificate.subjectName || certificate.subjectDN || "Certificado", identifier, expiration ? `válido até ${expiration}` : ""]
+    .filter(Boolean)
+    .join(" - ");
+}
+
+function isUsableOnrCertificate(certificate) {
+  const expiration = certificate.validityEnd ? new Date(certificate.validityEnd) : null;
+  if (expiration && expiration < new Date()) return false;
+  const type = certificate.pkiBrazil?.certificateType || "";
+  if (type && type !== "A3") return false;
+  if (!type || type === "Unknown") return false;
+  const usage = certificate.keyUsage || {};
+  if (usage.digitalSignature || usage.nonRepudiation) return true;
+  return Object.keys(usage).length === 0;
+}
+
+function showOnrCertificateDialog() {
+  const dialog = $("#onrCertificateDialog");
+  const select = $("#onrCertificateSelect");
+  const status = $("#onrCertificateStatus");
+  const refreshButton = $("#refreshOnrCertificates");
+  const confirmButton = $("#confirmOnrCertificateDialog");
+  if (dialog.open) return Promise.resolve(null);
+
+  select.replaceChildren();
+  confirmButton.disabled = true;
+  status.textContent = "Carregando certificados instalados...";
+  dialog.showModal();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = () => {
+      dialog.removeEventListener("cancel", handleCancel);
+      $("#closeOnrCertificateDialog").removeEventListener("click", handleCancel);
+      $("#cancelOnrCertificateDialog").removeEventListener("click", handleCancel);
+      confirmButton.removeEventListener("click", handleConfirm);
+      select.removeEventListener("change", updateConfirmButton);
+      refreshButton.removeEventListener("click", refreshCertificates);
+    };
+    const finish = (thumbprint) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      dialog.close();
+      resolve(thumbprint);
+    };
+    const handleCancel = (event) => {
+      event?.preventDefault();
+      finish(null);
+    };
+    const updateConfirmButton = () => {
+      confirmButton.disabled = !select.value || refreshButton.disabled;
+    };
+    const handleConfirm = () => {
+      if (select.value) finish(select.value);
+    };
+    const refreshCertificates = async () => {
+      refreshButton.disabled = true;
+      confirmButton.disabled = true;
+      status.textContent = "Carregando certificados instalados...";
+      select.replaceChildren();
+      try {
+        const certificates = (await window.execej.listOnrCertificates()).filter(isUsableOnrCertificate);
+        select.add(new Option(certificates.length ? "Selecione um certificado" : "Nenhum certificado válido encontrado", ""));
+        for (const certificate of certificates) {
+          if (certificate.thumbprint) select.add(new Option(onrCertificateLabel(certificate), certificate.thumbprint));
+        }
+        status.textContent = certificates.length
+          ? `${certificates.length} certificado(s) disponível(is).`
+          : "Conecte ou instale um certificado A3 válido e atualize a lista.";
+      } catch (error) {
+        const message = error.message || String(error);
+        status.textContent = message;
+        log(message);
+        select.add(new Option("Não foi possível carregar os certificados", ""));
+      } finally {
+        refreshButton.disabled = false;
+        updateConfirmButton();
+      }
+    };
+    dialog.addEventListener("cancel", handleCancel);
+    $("#closeOnrCertificateDialog").addEventListener("click", handleCancel);
+    $("#cancelOnrCertificateDialog").addEventListener("click", handleCancel);
+    confirmButton.addEventListener("click", handleConfirm);
+    select.addEventListener("change", updateConfirmButton);
+    refreshButton.addEventListener("click", refreshCertificates);
+    refreshCertificates();
+  });
+}
+
+async function addOnrCertificateForSignature(payload) {
+  if (!config.onr_signature_enabled || !payload.signerName) return payload;
+  if (!String(config.onr_api_key || "").trim()) {
+    alert("Informe a X-Api-Key da ONR nas configurações.");
+    return null;
+  }
+  const certificateThumbprint = await showOnrCertificateDialog();
+  return certificateThumbprint ? { ...payload, certificateThumbprint } : null;
+}
+
 function fillConfig() {
   for (const key of configKeys()) {
     const input = document.getElementById(key);
@@ -565,6 +671,9 @@ function fillConfig() {
   renderRtdCostTable(config.rtd_cost_table);
   if ($("#signers_text")) $("#signers_text").value = signersToText(config.signers);
   updateDefaultSignerOptions(config.default_signature_name);
+  $("#onr_signature_enabled").checked = Boolean(config.onr_signature_enabled);
+  $("#onr_api_key").value = config.onr_api_key || "";
+  $("#onrApiKeySetting").hidden = !config.onr_signature_enabled;
   $("#noteModel").value = config.note_requirement_model || "";
   $("#attachSheet").value = config.movements_sheet || "Movimentações";
   updateArispSearchRoot();
@@ -582,6 +691,8 @@ function readConfig() {
   data.rtd_cost_table = readRtdCostTable();
   data.signers = parseSignersText($("#signers_text")?.value || "");
   data.default_signature_name = $("#default_signature_name")?.value?.trim() || "";
+  data.onr_signature_enabled = $("#onr_signature_enabled").checked;
+  data.onr_api_key = $("#onr_api_key").value.trim();
   const defaultSigner = data.signers.find((signer) => signer.name === data.default_signature_name);
   data.default_signature_cargo = defaultSigner?.cargo || "";
   return data;
@@ -1974,6 +2085,7 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
   try {
     await saveCurrentProtocolSilently();
     let attachments = [];
+    let signature = signaturePayload($("#finalSigner"), $("#finalSignerCargo"));
     if (!undo) {
       const attachmentRequirements = await window.execej.movementAttachmentRequirements({
         ...protocolPayload(),
@@ -1987,11 +2099,17 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
         return;
       }
       attachments = selectedAttachments;
+      signature = await addOnrCertificateForSignature(signature);
+      if (!signature) {
+        button.disabled = false;
+        button.textContent = "Autuar";
+        return;
+      }
     }
     const action = undo ? window.execej.estornarAutuacao : window.execej.autuarMovimentacao;
     const result = await action({
       ...protocolPayload(),
-      ...signaturePayload($("#finalSigner"), $("#finalSignerCargo")),
+      ...signature,
       sheetName: selectedProtocolSheetName,
       sourceRowIndex,
       attachments
@@ -2429,8 +2547,10 @@ function initNote() {
   $("#noteMatricula").addEventListener("input", refreshNotePreview);
   $("#addBlankItem").addEventListener("click", () => addBlankItem());
   $("#generateNote").addEventListener("click", async () => {
+    const payload = await addOnrCertificateForSignature(notePayload());
+    if (!payload) return;
     await saveCurrentProtocolSilently();
-    const result = await run("Nota de Exigência criada.", () => window.execej.generateNote(notePayload()));
+    const result = await run("Nota de Exigência criada.", () => window.execej.generateNote(payload));
     scheduleProtocolFileRefresh();
     alert(`Nota de Exigência criada:\n${result.output}`);
   });
@@ -2472,6 +2592,7 @@ function initAttachments() {
   $("#moveSlotFileDown").addEventListener("click", () => moveSelectedSlotFile(1));
   $("#generateFinalPdf").addEventListener("click", generateFinalPdf);
   window.execej.onFinalPdfProgress((message) => log(message));
+  window.execej.onOnrSigningProgress((message) => log(message));
 }
 
 function selectSlot(index) {
@@ -2542,14 +2663,16 @@ function moveSelectedSlotFile(direction) {
 
 async function generateFinalPdf() {
   if (!requirePrenotation()) return;
-  await saveCurrentProtocolSilently();
-  const result = await run("PDF final gerado.", () => window.execej.generateFinalPdf({
+  const payload = await addOnrCertificateForSignature({
     odsPath: $("#attachOds").value.trim(),
     sheetName: $("#attachSheet").value.trim(),
     ...protocolPayload(),
     ...signaturePayload($("#finalSigner"), $("#finalSignerCargo")),
     slots
-  }));
+  });
+  if (!payload) return;
+  await saveCurrentProtocolSilently();
+  const result = await run("PDF final gerado.", () => window.execej.generateFinalPdf(payload));
   scheduleProtocolFileRefresh();
   if (result.warning) alert(`${result.warning}\n\nPDF criado:\n${result.output}`);
   else alert(`PDF/A final criado:\n${result.output}`);
@@ -2641,6 +2764,9 @@ function initArispStats() {
 function initConfig() {
   initConfigSubtabs();
   $("#signers_text").addEventListener("input", () => updateDefaultSignerOptions());
+  $("#onr_signature_enabled").addEventListener("change", (event) => {
+    $("#onrApiKeySetting").hidden = !event.currentTarget.checked;
+  });
   $("#addMovementRule").addEventListener("click", () => addMovementRuleRow({ quantity: "1+" }));
   $("#resetMovementRules").addEventListener("click", () => renderMovementRules(cloneDefaultMovementRows()));
   $("#addMovementPrefill").addEventListener("click", () => addMovementPrefillRow(""));
@@ -2650,7 +2776,13 @@ function initConfig() {
     if (confirm("Limpar toda a Tabela de Custas RTD das configurações?")) renderRtdCostTable([]);
   });
   $("#saveConfig").addEventListener("click", async () => {
-    config = await run("Configurações salvas.", () => window.execej.saveConfig(readConfig()));
+    const data = readConfig();
+    if (data.onr_signature_enabled && !data.onr_api_key) {
+      alert("Informe a X-Api-Key da ONR antes de ativar a assinatura.");
+      $("#onr_api_key").focus();
+      return;
+    }
+    config = await run("Configurações salvas.", () => window.execej.saveConfig(data));
     fillConfig();
   });
 }

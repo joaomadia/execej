@@ -84,7 +84,9 @@ const DEFAULT_CONFIG = {
   rtd_cost_table: [],
   signers: [],
   default_signature_name: "",
-  default_signature_cargo: ""
+  default_signature_cargo: "",
+  onr_signature_enabled: false,
+  onr_api_key: ""
 };
 
 const DEFAULT_PROTOCOL_SHEET_NAMES = [
@@ -1287,6 +1289,8 @@ function normalizeMovementPrefillOptions(config = {}) {
 
 function normalizeConfig(config = {}) {
   const merged = { ...DEFAULT_CONFIG, ...config };
+  merged.onr_signature_enabled = merged.onr_signature_enabled === true;
+  merged.onr_api_key = String(merged.onr_api_key || "").trim();
   merged.movement_document_rules = normalizeMovementDocumentRules(merged);
   merged.movement_attachment_rules = normalizeMovementAttachmentRules(merged);
   merged.movement_prefill_options = normalizeMovementPrefillOptions(merged);
@@ -3198,6 +3202,7 @@ async function autuarMovimentacao(config, data, onProgress) {
     });
     const generated = [...generatedFixed, ...generatedAttachments];
     if (!generated.length) throw new Error(`Nenhum documento foi gerado para a movimentação "${entry.movement}".`);
+    const fixedFileCount = generatedFixed.length;
     const persisted = [];
     try {
       for (const [movementOrder, order, stagedFile] of generated) {
@@ -3212,6 +3217,9 @@ async function autuarMovimentacao(config, data, onProgress) {
     }
     return {
       files: persisted.map(([, , filePath]) => filePath),
+      signatureFiles: isAutuacaoDocument(documentName)
+        ? persisted.slice(0, fixedFileCount).map(([, , filePath]) => filePath)
+        : [],
       parts: persisted.map(([, order, filePath]) => ({ file: filePath, order })),
       hasAttachments: attachmentSlots.length > 0,
       movement: entry.movement,

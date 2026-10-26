@@ -1,10 +1,13 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const core = require("./core");
+const onrApi = require("./core/onr-api");
+const webPkiNative = require("./core/webpki-native");
 
 const APP_VERSION = app.getVersion();
 autoUpdater.logger = log;
@@ -12,6 +15,7 @@ autoUpdater.autoDownload = false;
 
 let mainWindow;
 const autuationPreviewDirs = new Map();
+let cachedWebPkiLicense = "";
 
 function removeAutuationPreview(id) {
   const dir = autuationPreviewDirs.get(id);
@@ -27,6 +31,180 @@ function removeAllAutuationPreviews() {
       removeAutuationPreview(id);
     } catch (error) {
       log.error(`Não foi possível remover a prévia temporária ${id}:`, error);
+    }
+  }
+}
+
+function webPkiResultString(value, keys) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  for (const key of keys) {
+    if (typeof value[key] === "string" && value[key]) return value[key];
+  }
+  return "";
+}
+
+function certificateContentFromWebPki(value) {
+  return webPkiResultString(value, ["certificate", "content", "encodedCertificate", "value"])
+    .replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----/g, "")
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+async function configForOnrSignature(config, forceRefresh = false) {
+  if (!config.onr_signature_enabled) throw new Error("A assinatura ONR está desativada nas configurações.");
+  if (!String(config.onr_api_key || "").trim()) throw new Error("Informe a X-Api-Key da ONR nas configurações.");
+  if (forceRefresh) cachedWebPkiLicense = "";
+  if (cachedWebPkiLicense && !forceRefresh) return { ...config, webPkiLicense: cachedWebPkiLicense };
+  let response;
+  try {
+    response = await fetch(`${onrApi.DEFAULT_ONR_BASE_URL}/api/configuration`, {
+      headers: { Accept: "application/json, text/plain, */*" }
+    });
+  } catch (error) {
+    throw new Error(`Não foi possível obter a configuração Web PKI da ONR: ${error.message}`);
+  }
+  if (!response.ok) throw new Error(`A ONR respondeu HTTP ${response.status} ao carregar a configuração Web PKI.`);
+  const configuration = await response.json();
+  cachedWebPkiLicense = String(configuration?.webPki?.license || "").trim();
+  if (!cachedWebPkiLicense) throw new Error("A ONR não retornou uma licença para o componente Web PKI.");
+  return { ...config, webPkiLicense: cachedWebPkiLicense };
+}
+
+function isWebPkiLicenseError(error) {
+  return error?.code === "license_invalid"
+    || /invalid license|license_invalid|licen[cç]a.*web pki/i.test(String(error?.message || error || ""));
+}
+
+async function runWithValidWebPkiLicense(config, operation) {
+  const resolvedConfig = await configForOnrSignature(config);
+  try {
+    return await operation(resolvedConfig);
+  } catch (error) {
+    if (!isWebPkiLicenseError(error)) throw error;
+    const refreshedConfig = await configForOnrSignature(config, true);
+    return operation(refreshedConfig);
+  }
+}
+
+function notifyOnrSigningProgress(sender, message) {
+  if (sender && !sender.isDestroyed()) sender.send("onr:signingProgress", message);
+}
+
+async function signOnrPdfFiles(filePaths, certificateThumbprint, sender) {
+  const config = await configForOnrSignature(loadConfig());
+  const thumbprint = String(certificateThumbprint || "").trim();
+  const paths = Array.isArray(filePaths) ? filePaths.map((item) => path.resolve(String(item || ""))) : [];
+  if (!thumbprint) throw new Error("Selecione um certificado digital para assinar.");
+  if (!paths.length) throw new Error("Nenhum PDF foi informado para assinatura ONR.");
+  for (const filePath of paths) {
+    if (path.extname(filePath).toLowerCase() !== ".pdf" || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      throw new Error(`Arquivo PDF inválido para assinatura ONR: ${filePath}`);
+    }
+  }
+
+  const certificateResult = await runWithValidWebPkiLicense(
+    config,
+    (resolvedConfig) => webPkiNative.readCertificate(resolvedConfig, thumbprint)
+  );
+  const certificateContent = certificateContentFromWebPki(certificateResult);
+  if (!certificateContent) throw new Error("O Web PKI não retornou o certificado selecionado.");
+  const stagedFiles = [];
+  const tempDirs = [];
+  let operationError = null;
+  try {
+    for (const [index, filePath] of paths.entries()) {
+      notifyOnrSigningProgress(sender, `Assinando PDF ${index + 1} de ${paths.length}: ${path.basename(filePath)}`);
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_onr_sign_"));
+      tempDirs.push(tempDir);
+      const pdfaPath = path.join(tempDir, "preparado.pdf");
+      const conversion = await core.convertPdfToPdfAIfPossible(filePath, pdfaPath);
+      if (!conversion.pdfa) {
+        throw new Error(`Não foi possível preparar "${path.basename(filePath)}" em PDF/A para assinatura ONR. ${conversion.warning || "Verifique se o Ghostscript está instalado."}`);
+      }
+      const prepared = await onrApi.prepareSignature(config, {
+        contentBase64: fs.readFileSync(pdfaPath).toString("base64"),
+        fileName: path.basename(filePath),
+        certificateContent
+      });
+      const nativeResult = await runWithValidWebPkiLicense(config, (resolvedConfig) => (
+        webPkiNative.signHash(resolvedConfig, {
+          thumbprint,
+          hash: prepared.hash,
+          digestAlgorithm: prepared.digestAlgorithm
+        })
+      ));
+      const signature = webPkiResultString(nativeResult, ["signature", "value", "signedData", "content"])
+        || webPkiResultString(nativeResult?.signatureInfo, ["signature", "value", "content"]);
+      if (!signature) throw new Error("O Web PKI não retornou a assinatura digital.");
+      const document = await onrApi.completeSignature(config, { state: prepared.state, signature });
+      const signedFile = onrApi.signedFileFromDocument(document);
+      if (!signedFile) throw new Error("A ONR não retornou o PDF assinado.");
+      const signedPdf = await onrApi.downloadSignedFile(config, signedFile);
+      if (!signedPdf.subarray(0, 4).equals(Buffer.from("%PDF"))) {
+        throw new Error(`A ONR retornou um arquivo inválido para "${path.basename(filePath)}".`);
+      }
+      const stagedPath = path.join(path.dirname(filePath), `.execej-onr-${crypto.randomUUID()}.tmp`);
+      const staged = { filePath, stagedPath, backupPath: "", preserveBackup: false };
+      stagedFiles.push(staged);
+      fs.writeFileSync(stagedPath, signedPdf);
+    }
+
+    const replaced = [];
+    try {
+      for (const staged of stagedFiles) {
+        staged.backupPath = path.join(path.dirname(staged.filePath), `.execej-onr-backup-${crypto.randomUUID()}.tmp`);
+        fs.copyFileSync(staged.filePath, staged.backupPath);
+        replaced.push(staged);
+        fs.copyFileSync(staged.stagedPath, staged.filePath);
+      }
+    } catch (error) {
+      const rollbackErrors = [];
+      for (const staged of [...replaced].reverse()) {
+        try {
+          fs.copyFileSync(staged.backupPath, staged.filePath);
+        } catch (rollbackError) {
+          staged.preserveBackup = true;
+          rollbackErrors.push(`${staged.backupPath}: ${rollbackError.message}`);
+        }
+      }
+      if (rollbackErrors.length) {
+        throw new Error(`${error.message} Não foi possível restaurar todos os PDFs; cópias de segurança preservadas em: ${rollbackErrors.join("; ")}`);
+      }
+      throw error;
+    }
+    notifyOnrSigningProgress(sender, `${paths.length} PDF(s) assinado(s) pela ONR.`);
+    return paths;
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    const cleanupErrors = [];
+    for (const staged of stagedFiles) {
+      try {
+        fs.rmSync(staged.stagedPath, { force: true });
+      } catch (error) {
+        cleanupErrors.push(`${staged.stagedPath}: ${error.message}`);
+      }
+      if (staged.backupPath && !staged.preserveBackup) {
+        try {
+          fs.rmSync(staged.backupPath, { force: true });
+        } catch (error) {
+          cleanupErrors.push(`${staged.backupPath}: ${error.message}`);
+        }
+      }
+    }
+    for (const tempDir of tempDirs) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(`${tempDir}: ${error.message}`);
+      }
+    }
+    if (cleanupErrors.length) {
+      const message = `Não foi possível remover arquivos temporários da assinatura ONR: ${cleanupErrors.join("; ")}`;
+      if (operationError) log.error(message);
+      else throw new Error(message);
     }
   }
 }
@@ -165,22 +343,39 @@ function bundledResourcePath(name) {
 
 function loadConfig() {
   migrateLegacyStorage();
+  let loaded;
   try {
-    const loaded = JSON.parse(fs.readFileSync(configPath(), "utf8"));
-    const hasRtdCostTable = Object.prototype.hasOwnProperty.call(loaded, "rtd_cost_table")
-      || Object.prototype.hasOwnProperty.call(loaded, "rtdCostTable");
-    const config = core.normalizeConfig(loaded);
-    if (!config.base_protocol_template) {
-      const fallback = bundledResourcePath("Protocolo Geral.ods");
-      if (fs.existsSync(fallback)) config.base_protocol_template = fallback;
-    }
-    return hasRtdCostTable ? config : hydrateRtdCostTable(config);
+    loaded = JSON.parse(fs.readFileSync(configPath(), "utf8"));
   } catch {
-    const config = core.normalizeConfig();
+    loaded = {};
+  }
+  if (!loaded || typeof loaded !== "object" || Array.isArray(loaded)) loaded = {};
+  if (loaded.onr_api_key_encrypted) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("Não foi possível desbloquear a X-Api-Key da ONR neste computador.");
+    }
+    try {
+      loaded.onr_api_key = safeStorage.decryptString(Buffer.from(loaded.onr_api_key_encrypted, "base64"));
+    } catch (error) {
+      throw new Error(`Não foi possível ler a X-Api-Key criptografada da ONR: ${error.message}`);
+    }
+  } else if (String(loaded.onr_api_key || "").trim()) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("O armazenamento seguro do Windows não está disponível para proteger a X-Api-Key da ONR.");
+    }
+    loaded.onr_api_key_encrypted = safeStorage.encryptString(String(loaded.onr_api_key).trim()).toString("base64");
+    delete loaded.onr_api_key;
+    fs.writeFileSync(configPath(), JSON.stringify(loaded, null, 2), "utf8");
+  }
+  delete loaded.onr_api_key_encrypted;
+  const hasRtdCostTable = Object.prototype.hasOwnProperty.call(loaded, "rtd_cost_table")
+    || Object.prototype.hasOwnProperty.call(loaded, "rtdCostTable");
+  const config = core.normalizeConfig(loaded);
+  if (!config.base_protocol_template) {
     const fallback = bundledResourcePath("Protocolo Geral.ods");
     if (fs.existsSync(fallback)) config.base_protocol_template = fallback;
-    return hydrateRtdCostTable(config);
   }
+  return hasRtdCostTable ? config : hydrateRtdCostTable(config);
 }
 
 function protocolContextFromPathStrict(filePath) {
@@ -359,7 +554,18 @@ async function withProtocolOds(payload, fn) {
 
 function saveConfig(config) {
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(core.normalizeConfig(config), null, 2), "utf8");
+  const normalized = core.normalizeConfig(config);
+  const apiKey = String(normalized.onr_api_key || "").trim();
+  delete normalized.onr_api_key;
+  if (apiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("O armazenamento seguro do Windows não está disponível para guardar a X-Api-Key da ONR.");
+    }
+    normalized.onr_api_key_encrypted = safeStorage.encryptString(apiKey).toString("base64");
+  } else {
+    normalized.onr_api_key_encrypted = "";
+  }
+  fs.writeFileSync(configPath(), JSON.stringify(normalized, null, 2), "utf8");
   return loadConfig();
 }
 
@@ -570,6 +776,10 @@ ipcMain.handle("protocols:save", (_event, protocol) => saveProtocol(protocol));
 ipcMain.handle("protocols:delete", (_event, id) => deleteProtocol(id));
 ipcMain.handle("protocols:inspectOds", (_event, odsPath) => normalizeProtocol({ odsPath }));
 ipcMain.handle("protocols:listFiles", (_event, folderPath) => listFolderEntries(String(folderPath || "").trim()));
+ipcMain.handle("onr:certificates:list", async () => {
+  const config = loadConfig();
+  return runWithValidWebPkiLicense(config, (resolvedConfig) => webPkiNative.listCertificates(resolvedConfig));
+});
 
 ipcMain.handle("dialog:file", async (_event, { kind, title, filters }) => {
   const result = kind === "folder"
@@ -643,6 +853,12 @@ ipcMain.handle("movements:autuar", async (_event, payload) => {
       }
     };
     try {
+      if (payload.certificateThumbprint) {
+        if (!generated.signatureFiles.length) {
+          throw new Error("Não foi encontrada a folha de autuação com Nome e Cargo para assinatura.");
+        }
+        await signOnrPdfFiles(generated.signatureFiles, payload.certificateThumbprint);
+      }
       const saved = saveProtocol({ ...protocol, autuacoesMovimentacoes });
       return { protocol: saved };
     } catch (error) {
@@ -668,8 +884,8 @@ ipcMain.handle("movements:estornarAutuacao", async (_event, payload) => {
   return { protocol: saveProtocol({ ...protocol, autuacoesMovimentacoes }) };
 });
 ipcMain.handle("finalPdf:generate", async (event, payload) => {
-  return withProtocolOds(payload, (odsPath, protocol) => {
-    return core.generateFinalPdf(loadConfig(), {
+  return withProtocolOds(payload, async (odsPath, protocol) => {
+    const result = await core.generateFinalPdf(loadConfig(), {
       ...payload,
       odsPath,
       protocolFolder: payload.protocolFolder || protocol?.folderPath || "",
@@ -677,6 +893,10 @@ ipcMain.handle("finalPdf:generate", async (event, payload) => {
     }, (message) => {
       event.sender.send("finalPdf:progress", message);
     });
+    if (payload.certificateThumbprint) {
+      await signOnrPdfFiles([result.output], payload.certificateThumbprint, event.sender);
+    }
+    return result;
   });
 });
 ipcMain.handle("pdfa:convert", async (event, payload) => {
@@ -694,7 +914,13 @@ ipcMain.handle("note:preview", (_event, payload) => {
     ? core.noteTextsFromItems(payload.matricula, payload.items || [])
     : core.buildNoteRequirementTexts(payload.matricula, payload);
 });
-ipcMain.handle("note:generate", (_event, payload) => core.generateNote(loadConfig(), payload));
+ipcMain.handle("note:generate", async (event, payload) => {
+  const result = core.generateNote(loadConfig(), payload);
+  if (payload.certificateThumbprint) {
+    await signOnrPdfFiles([result.output], payload.certificateThumbprint, event.sender);
+  }
+  return result;
+});
 
 ipcMain.handle("documents:generate", async (_event, payload) => {
   const config = loadConfig();

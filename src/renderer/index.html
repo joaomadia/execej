@@ -121,6 +121,14 @@
           <label>Assinatura padrão<select id="default_signature_name"></select></label>
         </div>
         <p class="muted">Use uma assinatura por linha no formato: Nome completo | Cargo.</p>
+        <label class="check onr-signature-setting">
+          <input id="onr_signature_enabled" type="checkbox" />
+          Assinatura ONR
+        </label>
+        <label id="onrApiKeySetting" class="onr-api-key-setting" hidden>
+          X-Api-Key do Assinador ONR
+          <input id="onr_api_key" type="password" autocomplete="new-password" />
+        </label>
       </div>
       <div class="actions config-save-bar">
         <button id="saveConfig">Salvar configurações</button>
@@ -412,6 +420,28 @@
     <div id="autuationPreviewContent" class="autuation-preview-content">
       <div class="autuation-preview-empty">Carregando prévia...</div>
     </div>
+  </dialog>
+
+  <dialog id="onrCertificateDialog" class="onr-certificate-dialog" aria-labelledby="onrCertificateTitle">
+    <header class="onr-certificate-header">
+      <div>
+        <h2 id="onrCertificateTitle">Assinatura ONR</h2>
+        <p>Escolha o certificado digital instalado no computador.</p>
+      </div>
+      <button id="closeOnrCertificateDialog" type="button" aria-label="Fechar">×</button>
+    </header>
+    <div class="onr-certificate-body">
+      <div class="onr-certificate-select-row">
+        <label for="onrCertificateSelect">Certificado</label>
+        <select id="onrCertificateSelect"></select>
+        <button id="refreshOnrCertificates" type="button">Atualizar lista</button>
+      </div>
+      <p id="onrCertificateStatus" class="muted" role="status"></p>
+    </div>
+    <footer class="onr-certificate-actions">
+      <button id="cancelOnrCertificateDialog" type="button">Cancelar</button>
+      <button id="confirmOnrCertificateDialog" type="button" disabled>Assinar</button>
+    </footer>
   </dialog>
 
   <footer>
