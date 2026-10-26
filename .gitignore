@@ -1,0 +1,13 @@
+/dist
+/dist-electron
+/release
+/build
+/saidas
+/tmp
+/node_modules
+/.agents
+/.claude
+/MODELOS
+/Arquivos
+Thumbs.db
+.DS_Store

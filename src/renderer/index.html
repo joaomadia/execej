@@ -1,0 +1,359 @@
+﻿<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EXECEJ</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="./assets/execej-logo.png" alt="EXECEJ" class="app-logo" />
+      <h1>EXECEJ</h1>
+      <span id="version"></span>
+    </div>
+    <button id="checkUpdates">Verificar atualizações</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="active" data-tab="config">Configurações</button>
+    <button data-tab="protocols">Protocolo</button>
+    <button data-tab="arisp">Estatísticas ARISP</button>
+  </nav>
+
+  <main>
+    <section id="config" class="tab active">
+      <div class="config-subtabs">
+        <button class="active" type="button" data-config-panel="configGeneral">Geral</button>
+        <button type="button" data-config-panel="configRules">Regras de movimentações</button>
+        <button type="button" data-config-panel="configMovementList">Lista de movimentações</button>
+        <button type="button" data-config-panel="configRtdCosts">Tabela de Custas RTD</button>
+        <button type="button" data-config-panel="configSignatures">Assinaturas</button>
+      </div>
+      <div id="configGeneral" class="config-panel active">
+        <div class="grid">
+          <label>Pasta raiz inicial<input id="initial_folder_root" /></label>
+          <button data-pick-folder="initial_folder_root">Escolher</button>
+          <label>Arquivo base do protocolo ODS<input id="base_protocol_template" /></label>
+          <button data-pick-file="base_protocol_template" data-ext="ods">Escolher</button>
+          <label>Pasta de modelos<input id="models_folder" /></label>
+          <button data-pick-folder="models_folder">Escolher</button>
+          <label>Modelo padrão Nota de Exigência<input id="note_requirement_model" /></label>
+          <button data-pick-file="note_requirement_model" data-ext="odt">Escolher</button>
+        </div>
+        <div class="grid compact">
+          <label>Guia das intimações<input id="notifications_sheet" /></label>
+          <label>Coluna dos nomes<input id="notifications_name_col" /></label>
+          <label>Valor Base Prenotação<input id="base_prenotation_value" /></label>
+          <label>Guia da certidão<input id="certificate_sheet" /></label>
+          <label>Coluna dos nomes<input id="certificate_name_col" /></label>
+          <label>Guia de movimentações<input id="movements_sheet" /></label>
+        </div>
+      </div>
+      <div id="configRules" class="config-panel" hidden>
+        <div class="section-title">Movimentações pré-preenchidas</div>
+        <p class="muted">Use uma linha com Anexo desligado para gerar arquivo/modelo. Use uma linha com Anexo ligado para abrir coluna de anexos. A mesma movimentação pode aparecer mais de uma vez.</p>
+        <table id="movementRulesTable" class="rules-table movement-rules-table">
+          <thead>
+            <tr>
+              <th>Movimentação</th>
+              <th>Arquivo</th>
+              <th>Anexo</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="actions">
+          <button id="addMovementRule" type="button">Adicionar movimentação</button>
+          <button id="resetMovementRules" type="button">Restaurar padrão</button>
+        </div>
+      </div>
+      <div id="configMovementList" class="config-panel" hidden>
+        <div class="section-title">Lista de movimentações</div>
+        <p class="muted">Esses são os nomes que aparecem como sugestões na guia Movimentações. O campo continua aceitando texto livre.</p>
+        <table id="movementPrefillTable" class="rules-table movement-list-table">
+          <thead>
+            <tr>
+              <th>Movimentação</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="actions">
+          <button id="addMovementPrefill" type="button">Adicionar movimentação</button>
+          <button id="resetMovementPrefill" type="button">Restaurar padrão</button>
+        </div>
+      </div>
+      <div id="configRtdCosts" class="config-panel" hidden>
+        <p class="muted">Tabela geral usada no cálculo da guia Custas Intimação. Se "Adiciona Anexo?" estiver como "NÃO", a cidade usa só a quantidade base de anexos.</p>
+        <table id="rtdCostsTable" class="rules-table rtd-costs-table">
+          <thead>
+            <tr>
+              <th>Cidade</th>
+              <th>Fator</th>
+              <th>Aceita Procuração</th>
+              <th>Adiciona Anexo?</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="actions">
+          <button id="addRtdCostRow" type="button">Adicionar cidade</button>
+          <button id="clearRtdCostRows" type="button">Limpar tabela</button>
+        </div>
+      </div>
+      <div id="configSignatures" class="config-panel signature-config" hidden>
+        <div class="section-title">Assinaturas</div>
+        <div class="grid">
+          <label>Lista de assinaturas<textarea id="signers_text" placeholder="Nome completo | Cargo"></textarea></label>
+          <label>Assinatura padrão<select id="default_signature_name"></select></label>
+        </div>
+        <p class="muted">Use uma assinatura por linha no formato: Nome completo | Cargo.</p>
+      </div>
+      <div class="actions">
+        <button id="saveConfig">Salvar configurações</button>
+      </div>
+    </section>
+
+    <section id="protocols" class="tab">
+      <div class="protocol-layout">
+        <div id="protocolListView" class="protocol-list-view">
+          <div class="actions compact-actions">
+            <button id="newDraftProtocol" type="button">Novo rascunho</button>
+            <button id="importProtocolOds" type="button">Importar ODS</button>
+          </div>
+          <label>Filtrar<input id="protocolSearch" /></label>
+          <table id="protocolsTable">
+            <thead>
+              <tr><th>Protocolo</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="protocolDetailView" class="protocol-detail-view" hidden>
+          <div class="protocol-detail-header">
+            <button id="backToProtocolList" type="button">Voltar</button>
+            <div>
+              <div class="section-title" id="activeProtocolTitle"></div>
+              <div class="muted" id="protocolAutosaveStatus">Salvo automaticamente</div>
+            </div>
+          </div>
+          <div class="protocol-workspace">
+            <aside class="protocol-file-sidebar">
+              <div class="sidebar-header">
+                <div>
+                  <div class="section-title">Pasta do protocolo</div>
+                  <div class="folder-path" id="protocolFolderPathLabel"></div>
+                </div>
+                <button id="refreshProtocolFiles" type="button">Atualizar</button>
+              </div>
+              <div id="protocolFileTree" class="file-tree empty-state">Selecione a pasta do protocolo.</div>
+            </aside>
+            <div class="protocol-main">
+            <div id="protocolFilePreview" class="file-preview file-preview-main empty-state" hidden>Selecione um arquivo para visualizar.</div>
+            <div id="protocolContentArea">
+            <nav class="protocol-subtabs">
+              <button class="active" type="button" data-protocol-tab="protocolData">Dados</button>
+              <button type="button" data-protocol-tab="protocolSheets">Guias</button>
+              <button type="button" data-protocol-tab="initial">Pasta Inicial</button>
+              <button type="button" data-protocol-tab="note">Nota de Exigência</button>
+              <button type="button" data-protocol-tab="letters">Criação de Intimações</button>
+              <button type="button" data-protocol-tab="certificate">Certidão Transcurso</button>
+              <button type="button" data-protocol-tab="attachments">Anexos e PDF Final</button>
+              <button type="button" data-protocol-tab="pdfa">PDF/A</button>
+            </nav>
+            <div id="protocolNeedsPrenotation" class="warning" hidden>Vincule a prenotação para continuar.</div>
+            <div id="protocolPanels">
+              <section id="protocolData" class="protocol-panel active">
+                <div class="grid compact">
+                  <label>Nome do cadastro<input id="protocolName" /></label>
+                  <label>Protocolo Ofício Eletrônico<input id="protocolOffice" /></label>
+                  <label>Prenotação WebRI<input id="protocolPrenotation" /></label>
+                </div>
+                <div class="grid">
+                  <label>ODS de origem<input id="protocolOds" readonly /></label>
+                  <button id="pickProtocolOds" type="button">Importar ODS</button>
+                  <label>Pasta do protocolo<input id="protocolFolder" /></label>
+                  <button id="pickProtocolFolder" type="button">Escolher</button>
+                </div>
+                <div class="actions">
+                  <button id="saveProtocol" type="button" hidden>Salvar protocolo</button>
+                  <button id="unlinkProtocol" type="button">Desvincular</button>
+                </div>
+              </section>
+              <section id="protocolSheets" class="protocol-panel">
+                <div class="sheet-action-bar">
+                  <button id="saveProtocolSheets" type="button" hidden>Salvar guias</button>
+                  <button id="importProtocolSheetOds" type="button">Importar ODS</button>
+                  <button id="addSheetRow" type="button">Adicionar linha</button>
+                  <button id="addSheetColumn" type="button">Adicionar coluna</button>
+                  <button id="deleteSheetRow" type="button" disabled>Apagar linha</button>
+                  <button id="deleteSheetColumn" type="button" disabled>Apagar coluna</button>
+                </div>
+                <div id="protocolSheetTabs" class="sheet-tabs"></div>
+                <div class="sheet-grid-wrap">
+                  <div id="protocolSheetCustom" hidden></div>
+                  <table id="protocolSheetTable" class="sheet-table"></table>
+                </div>
+              </section>
+            </div>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="initial" class="tab">
+      <div class="grid compact">
+        <label>Protocolo Ofício Eletrônico<input id="initialOfficeProtocol" /></label>
+        <label>Prenotação WebRI<input id="initialPrenotation" /></label>
+      </div>
+      <label class="check"><input id="initialOverwrite" type="checkbox" /> Substituir ODS se já existir</label>
+      <div class="actions"><button id="createInitial">Criar Pasta Inicial</button></div>
+      <label>Pasta criada<input id="initialCreatedFolder" readonly /></label>
+      <label>Protocolo criado<input id="initialCreatedProtocol" readonly /></label>
+    </section>
+
+    <section id="note" class="tab">
+      <div class="grid">
+        <label class="ods-source-control">Protocolo ODS<input id="noteOds" /></label>
+        <button class="ods-source-control" data-pick-file="noteOds" data-ext="ods">Escolher</button>
+        <label>Modelo<input id="noteModel" /></label>
+        <button data-pick-file="noteModel" data-ext="odt">Escolher</button>
+        <label>Pasta de saída<input id="noteOutput" /></label>
+        <button data-pick-folder="noteOutput">Escolher</button>
+      </div>
+      <div class="grid compact">
+        <label>Matrícula<input id="noteMatricula" /></label>
+        <label>Data<input id="noteDate" /></label>
+      </div>
+      <div class="grid compact signature-grid">
+        <label>Assina:<select id="noteSigner"></select></label>
+        <label>Cargo:<input id="noteSignerCargo" /></label>
+      </div>
+      <div class="segmented">
+        <label><input name="noteMode" type="radio" value="standard" checked /> Modelo padrão</label>
+        <label><input name="noteMode" type="radio" value="blank" /> Modelo em branco</label>
+      </div>
+      <div id="noteStandard">
+        <div class="checks">
+          <fieldset><legend>Documentos faltantes</legend>
+            <label><input type="checkbox" data-issue="missing" value="requerimento" /> Falta Requerimento</label>
+            <label><input type="checkbox" data-issue="missing" value="projecao" /> Falta Projeção</label>
+            <label><input type="checkbox" data-issue="missing" value="procuracao" /> Falta Procuração</label>
+          </fieldset>
+          <fieldset><legend>Formato PDF/A</legend>
+            <label><input type="checkbox" data-issue="not_pdfa" value="requerimento" /> Requerimento não está em PDF/A</label>
+            <label><input type="checkbox" data-issue="not_pdfa" value="projecao" /> Projeção não está em PDF/A</label>
+            <label><input type="checkbox" data-issue="not_pdfa" value="procuracao" /> Procuração não está em PDF/A</label>
+          </fieldset>
+          <fieldset><legend>Assinatura digital</legend>
+            <label><input type="checkbox" data-issue="unsigned" value="requerimento" /> Requerimento não está assinado</label>
+            <label><input type="checkbox" data-issue="unsigned" value="projecao" /> Projeção não está assinada</label>
+            <label><input type="checkbox" data-issue="unsigned" value="procuracao" /> Procuração não está assinada</label>
+          </fieldset>
+        </div>
+        <label>Texto editável do item 3<textarea id="noteItem3"></textarea></label>
+      </div>
+      <div id="noteBlank" hidden>
+        <div class="actions"><button id="addBlankItem">+ Item</button></div>
+        <div id="blankItems"></div>
+      </div>
+      <div class="actions"><button id="generateNote">Gerar Nota de Exigência</button></div>
+    </section>
+
+    <section id="letters" class="tab">
+      <div data-merge="letters"></div>
+    </section>
+    <section id="certificate" class="tab">
+      <div data-merge="certificate"></div>
+    </section>
+
+    <section id="attachments" class="tab">
+      <div class="grid">
+        <label class="ods-source-control">Protocolo ODS<input id="attachOds" /></label>
+        <button class="ods-source-control" data-pick-file="attachOds" data-ext="ods">Escolher</button>
+        <label>Guia de movimentações<input id="attachSheet" /></label>
+        <span></span>
+      </div>
+      <div class="grid compact signature-grid">
+        <label>Assina:<select id="finalSigner"></select></label>
+        <label>Cargo:<input id="finalSignerCargo" /></label>
+      </div>
+      <div class="actions"><button id="analyzeMovements">Ler Movimentações</button></div>
+      <table id="slotsTable"><thead><tr><th>Movimentação</th><th>Coluna</th><th>Arquivos</th></tr></thead><tbody></tbody></table>
+      <div class="attachments-panel">
+        <div>
+          <strong id="selectedSlotTitle">Selecione uma coluna</strong>
+          <select id="slotFiles" multiple size="7"></select>
+        </div>
+        <div class="vertical-actions">
+          <button id="addSlotFiles">Adicionar arquivos</button>
+          <button id="removeSlotFile">Remover selecionado</button>
+          <button id="moveSlotFileUp">Subir</button>
+          <button id="moveSlotFileDown">Descer</button>
+        </div>
+      </div>
+      <div class="actions"><button id="generateFinalPdf">Gerar PDF final</button></div>
+      <p class="muted" id="pdfaNote">PDF/A final será aplicado quando houver Ghostscript instalado/embutido; caso contrário, o app avisará.</p>
+    </section>
+
+    <section id="pdfa" class="tab">
+      <div class="grid">
+        <label>Arquivo<input id="pdfaSource" /></label>
+        <button id="pickPdfaSource">Escolher</button>
+        <label>Pasta de saída<input id="pdfaOutputDir" /></label>
+        <button id="pickPdfaOutputDir">Escolher</button>
+      </div>
+      <div class="actions">
+        <button id="convertPdfa">Converter para PDF/A</button>
+        <button id="openPdfaOutput">Abrir PDF</button>
+      </div>
+      <div class="grid">
+        <label>PDF/A gerado<input id="pdfaOutput" readonly /></label>
+        <span></span>
+      </div>
+      <p class="muted">O app usa Ghostscript para gerar e validar candidatos em PDF/A-2b e PDF/A-3b, mantendo o mais rígido visualizável.</p>
+    </section>
+
+    <section id="arisp" class="tab">
+      <div class="grid compact">
+        <label>Mês<select id="arispMonth"></select></label>
+        <label>Ano<input id="arispYear" type="number" min="2026" /></label>
+        <label>Busca em<input id="arispSearchRoot" readonly /></label>
+      </div>
+      <div class="actions">
+        <button id="generateArispStats">Gerar estatísticas</button>
+        <button id="openArispOutput">Abrir ODS</button>
+      </div>
+      <div class="grid">
+        <label>Arquivo gerado<input id="arispOutput" readonly /></label>
+        <span></span>
+      </div>
+      <table id="arispTable">
+        <thead>
+          <tr>
+            <th>Protocolo intimação</th>
+            <th>Prenotação</th>
+            <th>Valor dívida</th>
+            <th>Destinação do mútuo</th>
+            <th>CPF</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted" id="arispSummary">A data mínima é junho de 2026. Meses posteriores à data atual não são aceitos.</p>
+    </section>
+  </main>
+
+  <footer>
+    <pre id="log"></pre>
+  </footer>
+  <script src="./renderer.js"></script>
+</body>
+</html>

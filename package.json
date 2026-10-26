@@ -1,0 +1,73 @@
+{
+  "name": "execej",
+  "version": "0.7.2",
+  "description": "App desktop EXECEJ.",
+  "main": "src/main.js",
+  "author": "madiaznx",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis",
+    "dist:portable": "electron-builder --win portable",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.6.2",
+    "fast-xml-parser": "^5.3.2",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {
+    "electron": "^38.2.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "br.com.madiaznx.execej",
+    "productName": "EXECEJ",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "Nota de Exigência.MODELO.odt",
+      "Protocolo Geral.ods"
+    ],
+    "extraResources": [
+      {
+        "from": "Nota de Exigência.MODELO.odt",
+        "to": "Nota de Exigência.MODELO.odt"
+      },
+      {
+        "from": "Protocolo Geral.ods",
+        "to": "Protocolo Geral.ods"
+      }
+    ],
+    "win": {
+      "artifactName": "EXECEJ-Setup-${version}.${ext}",
+      "icon": "build/execej.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EXECEJ"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "madiaznx",
+        "repo": "execej-updates"
+      }
+    ]
+  }
+}
