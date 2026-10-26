@@ -72,7 +72,7 @@ const DEFAULT_CONFIG = {
   initial_folder_root: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\Prenotados",
   base_protocol_template: "",
   models_folder: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\MODELOS",
-  note_requirement_model: `${models_folder}\\Nota de Exigência.MODELO.odt`,
+  note_requirement_model: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\MODELOS\\Nota de Exigência.MODELO.odt",
   notifications_sheet: "Notificações",
   notifications_name_col: "E",
   base_prenotation_value: "81,56",
