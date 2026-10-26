@@ -1320,6 +1320,17 @@ function closeProtocolFilePreview() {
   if (content) content.hidden = false;
 }
 
+function toggleProtocolFileSidebar() {
+  const workspace = $(".protocol-workspace");
+  const toggle = $("#toggleProtocolFiles");
+  if (!workspace || !toggle) return;
+  const isExpanded = workspace.classList.toggle("files-collapsed") === false;
+  const label = isExpanded ? "Recolher arquivos do protocolo" : "Expandir arquivos do protocolo";
+  toggle.setAttribute("aria-expanded", String(isExpanded));
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+}
+
 function previewProtocolFile(item) {
   const host = $("#protocolFilePreview");
   if (!host || !item || item.type !== "file") return;
@@ -1592,7 +1603,8 @@ function renderProtocolSheetTabs() {
   const host = $("#protocolSheetTabs");
   if (!host) return;
   const protocol = selectedProtocol();
-  const names = protocolSheetNames(protocol);
+  const names = protocolSheetNames(protocol)
+    .filter((name) => normalizeUiKey(name) !== normalizeUiKey("TABELA DE CUSTAS RTD"));
   host.innerHTML = "";
   if (!names.length) {
     selectedProtocolSheetName = "";
@@ -1839,6 +1851,7 @@ async function unlinkProtocol(id = selectedProtocolId) {
 
 function initProtocols() {
   mountProtocolPanels();
+  $("#toggleProtocolFiles").addEventListener("click", toggleProtocolFileSidebar);
   $("#newDraftProtocol").addEventListener("click", createDraftProtocol);
   $("#importProtocolOds").addEventListener("click", importProtocolOds);
   $("#protocolSearch").addEventListener("input", renderProtocols);
@@ -1849,7 +1862,6 @@ function initProtocols() {
   $("#addSheetColumn").addEventListener("click", addProtocolSheetColumn);
   $("#deleteSheetRow").addEventListener("click", deleteProtocolSheetRow);
   $("#deleteSheetColumn").addEventListener("click", deleteProtocolSheetColumn);
-  $("#importProtocolSheetOds").addEventListener("click", pickProtocolOds);
   $("#unlinkProtocol").addEventListener("click", () => unlinkProtocol(selectedProtocolId).catch((error) => log(error.message || String(error))));
   $("#pickProtocolOds").addEventListener("click", pickProtocolOds);
   $("#pickProtocolFolder").addEventListener("click", async () => {

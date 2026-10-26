@@ -7,23 +7,30 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <header>
-    <div class="brand">
-      <img src="./assets/execej-logo.png" alt="EXECEJ" class="app-logo" />
-      <h1>EXECEJ</h1>
-      <span id="version"></span>
-    </div>
-    <button id="checkUpdates">Verificar atualizações</button>
-  </header>
+  <aside class="app-sidebar">
+    <header>
+      <div class="brand">
+        <img src="./assets/execej-logo.png" alt="EXECEJ" class="app-logo" />
+        <h1>EXECEJ</h1>
+        <span id="version"></span>
+      </div>
+      <button id="checkUpdates" aria-label="Verificar atualizações" title="Verificar atualizações">Verificar atualizações</button>
+    </header>
 
-  <nav class="tabs">
-    <button class="active" data-tab="config">Configurações</button>
-    <button data-tab="protocols">Protocolo</button>
-    <button data-tab="arisp">Estatísticas ARISP</button>
-  </nav>
+    <nav class="tabs" aria-label="Navegação principal">
+      <button class="active" data-tab="config" title="Configurações">Configurações</button>
+      <button data-tab="protocols" title="Protocolo">Protocolo</button>
+      <button data-tab="arisp" title="Estatísticas ARISP">Estatísticas ARISP</button>
+    </nav>
+  </aside>
 
   <main>
     <section id="config" class="tab active">
+      <div class="page-heading">
+        <div class="eyebrow">SISTEMA</div>
+        <h2>Configurações</h2>
+        <p>Gerencie modelos, movimentações, custas e assinaturas usados no aplicativo.</p>
+      </div>
       <div class="config-subtabs">
         <button class="active" type="button" data-config-panel="configGeneral">Geral</button>
         <button type="button" data-config-panel="configRules">Regras de movimentações</button>
@@ -49,6 +56,26 @@
           <label>Guia da certidão<input id="certificate_sheet" /></label>
           <label>Coluna dos nomes<input id="certificate_name_col" /></label>
           <label>Guia de movimentações<input id="movements_sheet" /></label>
+        </div>
+      </div>
+      <div id="configRtdCosts" class="config-panel" hidden>
+        <div class="section-title">Tabela de Custas RTD</div>
+        <p class="muted">Tabela geral usada no cálculo da guia Custas Intimação. Se "Adiciona Anexo?" estiver como "NÃO", a cidade usa só a quantidade base de anexos.</p>
+        <table id="rtdCostsTable" class="rules-table rtd-costs-table">
+          <thead>
+            <tr>
+              <th>Cidade</th>
+              <th>Fator</th>
+              <th>Aceita Procuração</th>
+              <th>Adiciona Anexo?</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div class="actions">
+          <button id="addRtdCostRow" type="button">Adicionar cidade</button>
+          <button id="clearRtdCostRows" type="button">Limpar tabela</button>
         </div>
       </div>
       <div id="configRules" class="config-panel" hidden>
@@ -87,25 +114,6 @@
           <button id="resetMovementPrefill" type="button">Restaurar padrão</button>
         </div>
       </div>
-      <div id="configRtdCosts" class="config-panel" hidden>
-        <p class="muted">Tabela geral usada no cálculo da guia Custas Intimação. Se "Adiciona Anexo?" estiver como "NÃO", a cidade usa só a quantidade base de anexos.</p>
-        <table id="rtdCostsTable" class="rules-table rtd-costs-table">
-          <thead>
-            <tr>
-              <th>Cidade</th>
-              <th>Fator</th>
-              <th>Aceita Procuração</th>
-              <th>Adiciona Anexo?</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <div class="actions">
-          <button id="addRtdCostRow" type="button">Adicionar cidade</button>
-          <button id="clearRtdCostRows" type="button">Limpar tabela</button>
-        </div>
-      </div>
       <div id="configSignatures" class="config-panel signature-config" hidden>
         <div class="section-title">Assinaturas</div>
         <div class="grid">
@@ -114,7 +122,7 @@
         </div>
         <p class="muted">Use uma assinatura por linha no formato: Nome completo | Cargo.</p>
       </div>
-      <div class="actions">
+      <div class="actions config-save-bar">
         <button id="saveConfig">Salvar configurações</button>
       </div>
     </section>
@@ -122,6 +130,11 @@
     <section id="protocols" class="tab">
       <div class="protocol-layout">
         <div id="protocolListView" class="protocol-list-view">
+          <div class="page-heading">
+            <div class="eyebrow">FLUXO DE TRABALHO</div>
+            <h2>Protocolos</h2>
+            <p>Abra um protocolo para acessar seus dados, documentos e ferramentas de finalização.</p>
+          </div>
           <div class="actions compact-actions">
             <button id="newDraftProtocol" type="button">Novo rascunho</button>
             <button id="importProtocolOds" type="button">Importar ODS</button>
@@ -142,30 +155,50 @@
               <div class="muted" id="protocolAutosaveStatus">Salvo automaticamente</div>
             </div>
           </div>
+          <nav class="protocol-subtabs">
+            <div class="protocol-tab-group">
+              <span class="protocol-tab-group-title">PROTOCOLO</span>
+              <div class="protocol-tab-group-buttons">
+                <button class="active" type="button" data-protocol-tab="protocolData">Dados</button>
+                <button type="button" data-protocol-tab="protocolSheets">Guias</button>
+              </div>
+            </div>
+            <div class="protocol-tab-group">
+              <span class="protocol-tab-group-title">DOCUMENTOS</span>
+              <div class="protocol-tab-group-buttons">
+                <button type="button" data-protocol-tab="initial">Pasta Inicial</button>
+                <button type="button" data-protocol-tab="note">Nota de Exigência</button>
+                <button type="button" data-protocol-tab="letters">Intimações</button>
+                <button type="button" data-protocol-tab="certificate">Certidão</button>
+              </div>
+            </div>
+            <div class="protocol-tab-group">
+              <span class="protocol-tab-group-title">FINALIZAÇÃO</span>
+              <div class="protocol-tab-group-buttons">
+                <button type="button" data-protocol-tab="attachments">Anexos e PDF final</button>
+                <button type="button" data-protocol-tab="pdfa">Conversão PDF/A</button>
+              </div>
+            </div>
+          </nav>
           <div class="protocol-workspace">
             <aside class="protocol-file-sidebar">
               <div class="sidebar-header">
-                <div>
+                <div class="sidebar-title">
                   <div class="section-title">Pasta do protocolo</div>
                   <div class="folder-path" id="protocolFolderPathLabel"></div>
                 </div>
-                <button id="refreshProtocolFiles" type="button">Atualizar</button>
+                <div class="sidebar-actions">
+                  <button id="refreshProtocolFiles" type="button">Atualizar</button>
+                </div>
+                <button id="toggleProtocolFiles" class="toggle-protocol-files" type="button" aria-expanded="true" aria-label="Recolher arquivos do protocolo" title="Recolher arquivos do protocolo">
+                  <span aria-hidden="true"></span>
+                </button>
               </div>
               <div id="protocolFileTree" class="file-tree empty-state">Selecione a pasta do protocolo.</div>
             </aside>
             <div class="protocol-main">
             <div id="protocolFilePreview" class="file-preview file-preview-main empty-state" hidden>Selecione um arquivo para visualizar.</div>
             <div id="protocolContentArea">
-            <nav class="protocol-subtabs">
-              <button class="active" type="button" data-protocol-tab="protocolData">Dados</button>
-              <button type="button" data-protocol-tab="protocolSheets">Guias</button>
-              <button type="button" data-protocol-tab="initial">Pasta Inicial</button>
-              <button type="button" data-protocol-tab="note">Nota de Exigência</button>
-              <button type="button" data-protocol-tab="letters">Criação de Intimações</button>
-              <button type="button" data-protocol-tab="certificate">Certidão Transcurso</button>
-              <button type="button" data-protocol-tab="attachments">Anexos e PDF Final</button>
-              <button type="button" data-protocol-tab="pdfa">PDF/A</button>
-            </nav>
             <div id="protocolNeedsPrenotation" class="warning" hidden>Vincule a prenotação para continuar.</div>
             <div id="protocolPanels">
               <section id="protocolData" class="protocol-panel active">
@@ -186,15 +219,14 @@
                 </div>
               </section>
               <section id="protocolSheets" class="protocol-panel">
-                <div class="sheet-action-bar">
+                <div id="protocolSheetTabs" class="sheet-tabs"></div>
+                <div class="sheet-table-actions">
                   <button id="saveProtocolSheets" type="button" hidden>Salvar guias</button>
-                  <button id="importProtocolSheetOds" type="button">Importar ODS</button>
                   <button id="addSheetRow" type="button">Adicionar linha</button>
                   <button id="addSheetColumn" type="button">Adicionar coluna</button>
                   <button id="deleteSheetRow" type="button" disabled>Apagar linha</button>
                   <button id="deleteSheetColumn" type="button" disabled>Apagar coluna</button>
                 </div>
-                <div id="protocolSheetTabs" class="sheet-tabs"></div>
                 <div class="sheet-grid-wrap">
                   <div id="protocolSheetCustom" hidden></div>
                   <table id="protocolSheetTable" class="sheet-table"></table>
@@ -322,6 +354,11 @@
     </section>
 
     <section id="arisp" class="tab">
+      <div class="page-heading">
+        <div class="eyebrow">RELATÓRIOS</div>
+        <h2>Estatísticas ARISP</h2>
+        <p>Gere e consulte os dados do período selecionado.</p>
+      </div>
       <div class="grid compact">
         <label>Mês<select id="arispMonth"></select></label>
         <label>Ano<input id="arispYear" type="number" min="2026" /></label>
