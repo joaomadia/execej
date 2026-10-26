@@ -1376,6 +1376,29 @@ function movementHasFixedDocument(row, layout) {
   return normalizeKey(documentName) !== "NOME_ARQUIVO";
 }
 
+function movementAttachmentRequirements(odsPath, sheetName, sourceRowIndex, config = {}) {
+  const rows = readOdsSheet(odsPath, sheetName || config.movements_sheet);
+  const { entries } = movementRowsFromSheetRows(rows);
+  const entryIndex = entries.findIndex((entry) => entry.sourceRow === Number(sourceRowIndex));
+  if (entryIndex < 0) throw new Error("A movimentação selecionada não foi encontrada na guia.");
+  const entry = entries[entryIndex];
+  if (isCompatibilityMovement(entry.movement) && compatibilityAttachmentCoveredByPreviousMovement(entries, entryIndex)) return [];
+  return normalizeMovementAttachmentRules(config)
+    .filter((rule) => movementMatches(entry.movement, rule.movement))
+    .map((rule) => {
+      const slot = slotFromMovementRule(entry.row, entry.movement, entry.movementIndex, entry.layout, rule);
+      return {
+        title: slot.title,
+        movement: slot.movement,
+        movement_date: slot.movement_date,
+        row_index: slot.row_index,
+        file_date: slot.file_date,
+        long_date: slot.long_date,
+        single_file: slot.single_file
+      };
+    });
+}
+
 function analyzeMovements(odsPath, sheetName, config = {}) {
   const rows = readOdsSheet(odsPath, sheetName);
   const { entries } = movementRowsFromSheetRows(rows);
@@ -2480,6 +2503,46 @@ async function mergePdfs(pdfPaths, outputPath) {
   fs.writeFileSync(outputPath, await merged.save());
 }
 
+async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, outputDir) {
+  const pdfsDir = path.resolve(protocolFolder, "Autuação", "PDFs");
+  const records = Object.entries(autuacoesMovimentacoes || {})
+    .filter(([, record]) => record && Array.isArray(record.files))
+    .map(([rowIndex, record], index) => ({
+      rowIndex,
+      record,
+      index,
+      timestamp: Date.parse(record.autuadoEm || "")
+    }))
+    .sort((a, b) => {
+      const aTimestamp = Number.isFinite(a.timestamp) ? a.timestamp : Number.MAX_SAFE_INTEGER;
+      const bTimestamp = Number.isFinite(b.timestamp) ? b.timestamp : Number.MAX_SAFE_INTEGER;
+      return aTimestamp - bTimestamp || a.index - b.index;
+    });
+  if (!records.length) throw new Error("Ainda não há movimentações autuadas para visualizar.");
+
+  const pdfPaths = [];
+  for (const { rowIndex, record } of records) {
+    const parts = Array.isArray(record.parts) && record.parts.length
+      ? [...record.parts].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+      : record.files.map((file) => ({ file }));
+    if (!parts.length) throw new Error(`A autuação da movimentação ${rowIndex} não contém PDFs.`);
+    for (const part of parts) {
+      const filePath = path.resolve(String(part.file || ""));
+      if (path.dirname(filePath) !== pdfsDir || path.extname(filePath).toLowerCase() !== ".pdf") {
+        throw new Error(`O PDF registrado para a movimentação ${rowIndex} está fora da pasta Autuação\\PDFs.`);
+      }
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`O PDF autuado para a movimentação ${rowIndex} não foi encontrado:\n${filePath}`);
+      }
+      pdfPaths.push(filePath);
+    }
+  }
+
+  const outputPath = path.join(outputDir, "visualizacao-autuacoes.pdf");
+  await mergePdfs(pdfPaths, outputPath);
+  return outputPath;
+}
+
 function addNoteFields(fields, texts) {
   addField(fields, "MATRICULA", texts.matricula);
   addField(fields, "MATRÍCULA", texts.matricula);
@@ -2693,7 +2756,7 @@ function fixedDocumentOutputOrder(movementName, documentName) {
   return 0;
 }
 
-async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, protocolFolder, pdfsDir, tempDir, onProgress, signatureData }) {
+async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, protocolFolder, pdfsDir, outputDir = pdfsDir, tempDir, onProgress, signatureData }) {
   const generated = [];
   let extractionPrenotationFields = null;
   let consolidationFields = null;
@@ -2759,7 +2822,7 @@ async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, p
     } catch (error) {
       throw new Error(`Falha ao converter documento fixo "${documentName}": ${error.message}`);
     }
-    const outputPdf = uniquePath(path.join(pdfsDir, `${safeFilename(movementName)} - ${fileDate} - ${safeFilename(context.label)}.pdf`));
+    const outputPdf = uniquePath(path.join(outputDir, `${safeFilename(movementName)} - ${fileDate} - ${safeFilename(context.label)}.pdf`));
     fs.copyFileSync(convertedPdf, outputPdf);
     const outputRowIndex = movementIndex;
     const outputOrder = fixedDocumentOutputOrder(movementName, documentName);
@@ -3011,13 +3074,49 @@ async function generateFinalPdf(config, data, onProgress) {
   const protocolFolder = data.protocolFolder || path.dirname(odsPath);
   const autuacaoDir = path.join(protocolFolder, "Autuação");
   const pdfsDir = path.join(autuacaoDir, "PDFs");
+  const fixedRows = fixedDocumentRows(rows);
+  const orderedParts = [];
+  const autuacoesMovimentacoes = data.autuacoesMovimentacoes || {};
+  const movimentacoesNaoAutuadas = fixedRows.filter(([, , , entryIndex, entries]) => {
+    const sourceRowIndex = entries[entryIndex]?.sourceRow;
+    return !autuacoesMovimentacoes[String(sourceRowIndex)];
+  });
+  if (movimentacoesNaoAutuadas.length) {
+    const movementNames = movimentacoesNaoAutuadas.map(([, row, layout]) => getCell(row, layout.movement));
+    throw new Error(`Autue cada movimentação antes de gerar o PDF final:\n\n${movementNames.slice(0, 12).join("\n")}`);
+  }
+  for (const [movementIndex, row, layout, entryIndex, entries] of fixedRows) {
+    const movement = entries[entryIndex];
+    const autuation = autuacoesMovimentacoes[String(movement.sourceRow)];
+    if (!autuation.files.length) {
+      throw new Error(`Os PDFs da movimentação "${movement.movement}" não foram encontrados no registro de autuação.`);
+    }
+    const parts = Array.isArray(autuation.parts) && autuation.parts.length
+      ? autuation.parts
+      : autuation.files.map((file) => ({
+        file,
+        order: fixedDocumentOutputOrder(getCell(row, layout.movement), getCell(row, layout.document))
+      }));
+    for (const part of parts) {
+      const file = part.file;
+      const filePath = path.resolve(String(file || ""));
+      if (path.dirname(filePath) !== path.resolve(pdfsDir) || path.extname(filePath).toLowerCase() !== ".pdf") {
+        throw new Error(`O PDF registrado para a movimentação "${movement.movement}" está fora da pasta Autuação\\PDFs.`);
+      }
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`O PDF autuado para a movimentação "${movement.movement}" não foi encontrado:\n${filePath}`);
+      }
+      orderedParts.push([movementIndex, Number(part.order) || 0, filePath]);
+    }
+  }
   fs.mkdirSync(pdfsDir, { recursive: true });
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_pdf_"));
-  const fixedRows = fixedDocumentRows(rows);
-  const signatureData = { signerName: data.signerName, signerCargo: data.signerCargo };
-  const orderedParts = [];
-  orderedParts.push(...await generateFixedPdfs({ config, odsPath, slots, fixedRows, context, protocolFolder, pdfsDir, tempDir, onProgress, signatureData }));
-  orderedParts.push(...await copyAttachmentPdfs({ slots, context, pdfsDir, tempDir, onProgress }));
+  const movementEntries = movementRowsFromSheetRows(rows).entries;
+  const autuatedRowsWithAttachments = new Set(Object.entries(autuacoesMovimentacoes)
+    .filter(([rowIndex, autuation]) => autuation.hasAttachments && movementEntries.some((entry) => entry.sourceRow === Number(rowIndex)))
+    .map(([rowIndex]) => movementEntries.find((entry) => entry.sourceRow === Number(rowIndex)).movementIndex));
+  const pendingAttachmentSlots = slots.filter((slot) => slot.row_index < 0 || !autuatedRowsWithAttachments.has(Number(slot.row_index)));
+  orderedParts.push(...await copyAttachmentPdfs({ slots: pendingAttachmentSlots, context, pdfsDir, tempDir, onProgress }));
   orderedParts.sort((a, b) => a[0] - b[0] || a[1] - b[1] || String(a[2]).localeCompare(String(b[2])));
   const pdfParts = orderedParts.map((item) => item[2]);
   if (!pdfParts.length) throw new Error("Nenhum PDF foi preparado para geração final.");
@@ -3028,6 +3127,114 @@ async function generateFinalPdf(config, data, onProgress) {
   onProgress?.("Normalizando PDF final...");
   const pdfa = await convertPdfToPdfAIfPossible(merged, output);
   return { output, pdfsDir, ...pdfa };
+}
+
+async function autuarMovimentacao(config, data, onProgress) {
+  const odsPath = data.odsPath;
+  const sheetName = data.sheetName || config.movements_sheet;
+  const sourceRowIndex = Number(data.sourceRowIndex);
+  if (!Number.isInteger(sourceRowIndex) || sourceRowIndex < 0) throw new Error("Selecione uma movimentação válida para autuar.");
+  const protocolFolder = String(data.protocolFolder || "").trim();
+  if (!protocolFolder) throw new Error("A pasta do protocolo não está definida.");
+  const rows = readOdsSheet(odsPath, sheetName);
+  const { entries } = movementRowsFromSheetRows(rows);
+  const entryIndex = entries.findIndex((entry) => entry.sourceRow === sourceRowIndex);
+  if (entryIndex < 0) throw new Error("A movimentação selecionada não foi encontrada na guia.");
+  const entry = entries[entryIndex];
+  const previousMovements = entries.slice(0, entryIndex).map((item) => item.movement);
+  const requirements = movementAttachmentRequirements(odsPath, sheetName, sourceRowIndex, config);
+  const suppliedAttachments = Array.isArray(data.attachments) ? data.attachments : [];
+  const attachmentSlots = requirements.map((requirement) => {
+    const supplied = suppliedAttachments.find((item) => item.title === requirement.title);
+    const files = Array.isArray(supplied?.files) ? supplied.files.map((file) => String(file || "").trim()).filter(Boolean) : [];
+    if (!files.length) throw new Error(`Anexe pelo menos um arquivo em "${requirement.title}" antes de autuar.`);
+    if (requirement.single_file && files.length > 1) throw new Error(`"${requirement.title}" aceita somente um arquivo.`);
+    return { ...requirement, files };
+  });
+  if (suppliedAttachments.some((item) => !requirements.some((requirement) => requirement.title === item.title))) {
+    throw new Error("Há anexos informados para uma movimentação diferente.");
+  }
+  const documentName = getCell(entry.row, entry.layout.document)
+    || movementDocumentName(entry.movement, previousMovements, config);
+  if (!documentName) throw new Error(`Não há documento configurado para a movimentação "${entry.movement}".`);
+  const autuationRow = [...entry.row];
+  ensureRowLength(autuationRow, entry.layout.document);
+  autuationRow[entry.layout.document] = documentName;
+  const fixedRow = [
+    entry.movementIndex,
+    autuationRow,
+    entry.layout,
+    entryIndex,
+    entries
+  ];
+  const protocolContext = protocolContextFromValues(data, odsPath);
+  const autuacaoDir = path.join(protocolFolder, "Autuação");
+  const pdfsDir = path.join(autuacaoDir, "PDFs");
+  fs.mkdirSync(pdfsDir, { recursive: true });
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_autuacao_"));
+  try {
+    const generatedFixed = await generateFixedPdfs({
+      config,
+      odsPath,
+      slots: [],
+      fixedRows: [fixedRow],
+      context: protocolContext,
+      protocolFolder,
+      pdfsDir,
+      outputDir: tempDir,
+      tempDir,
+      onProgress
+    });
+    const generatedAttachments = await copyAttachmentPdfs({
+      slots: attachmentSlots.map((slot) => ({
+        ...slot,
+        fixed_position: "",
+        optional: false
+      })),
+      context: protocolContext,
+      pdfsDir: tempDir,
+      tempDir,
+      onProgress
+    });
+    const generated = [...generatedFixed, ...generatedAttachments];
+    if (!generated.length) throw new Error(`Nenhum documento foi gerado para a movimentação "${entry.movement}".`);
+    const persisted = [];
+    try {
+      for (const [movementOrder, order, stagedFile] of generated) {
+        const file = uniquePath(path.join(pdfsDir, path.basename(stagedFile)));
+        fs.copyFileSync(stagedFile, file);
+        persisted.push([movementOrder, order, file]);
+        fs.unlinkSync(stagedFile);
+      }
+    } catch (error) {
+      for (const [, , file] of persisted) fs.rmSync(file, { force: true });
+      throw error;
+    }
+    return {
+      files: persisted.map(([, , filePath]) => filePath),
+      parts: persisted.map(([, order, filePath]) => ({ file: filePath, order })),
+      hasAttachments: attachmentSlots.length > 0,
+      movement: entry.movement,
+      documentName
+    };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function estornarAutuacaoFiles(protocolFolder, files) {
+  const pdfsDir = path.resolve(protocolFolder, "Autuação", "PDFs");
+  const removed = [];
+  for (const file of Array.isArray(files) ? files : []) {
+    const filePath = path.resolve(String(file || ""));
+    if (path.dirname(filePath) !== pdfsDir || path.extname(filePath).toLowerCase() !== ".pdf") {
+      throw new Error("O estorno só pode remover PDFs registrados dentro da pasta Autuação\\PDFs.");
+    }
+    if (!fs.existsSync(filePath)) continue;
+    fs.unlinkSync(filePath);
+    removed.push(filePath);
+  }
+  return removed;
 }
 
 function statsMonthName(month) {
@@ -3822,6 +4029,7 @@ module.exports = {
   readOdsSheet,
   extractRecords,
   analyzeMovements,
+  movementAttachmentRequirements,
   createInitialFolder,
   findModelFile,
   mergeOdtDocument,
@@ -3830,9 +4038,12 @@ module.exports = {
   convertPdfToPdfAIfPossible,
   convertAnyFileToPdfA,
   mergePdfs,
+  createAutuationPreview,
   buildNoteRequirementTexts,
   noteTextsFromItems,
   generateNote,
+  autuarMovimentacao,
+  estornarAutuacaoFiles,
   generateFinalPdf,
   generateArispStats,
   addField,
@@ -3844,4 +4055,3 @@ module.exports = {
   protocolContextFromPath,
   protocolContextFromValues
 };
-

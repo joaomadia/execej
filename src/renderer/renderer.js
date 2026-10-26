@@ -10,7 +10,10 @@ let selectedSlotIndex = -1;
 let protocolAutosaveTimer = null;
 let protocolAutosaveInFlight = false;
 let protocolAutosaveQueued = false;
+let protocolAutosavePromise = Promise.resolve();
 let protocolFileRefreshTimer = null;
+let activeAutuationPreviewId = "";
+let autuationPreviewRequestId = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -1212,6 +1215,7 @@ function readProtocolForm() {
     prenotation: $("#protocolPrenotation").value.trim(),
     odsPath: $("#protocolOds").value.trim(),
     folderPath: $("#protocolFolder").value.trim(),
+    autuacoesMovimentacoes: current?.autuacoesMovimentacoes || {},
     sheetOrder: workbook.sheetOrder,
     sheets: workbook.sheets
   };
@@ -1224,30 +1228,33 @@ function setProtocolAutosaveStatus(text, state = "") {
   status.dataset.state = state;
 }
 
-async function performProtocolAutosave() {
-  if (!selectedProtocol()) return;
+function performProtocolAutosave() {
+  if (!selectedProtocol()) return Promise.resolve();
   if (protocolAutosaveInFlight) {
     protocolAutosaveQueued = true;
-    return;
+    return protocolAutosavePromise;
   }
   protocolAutosaveInFlight = true;
   protocolAutosaveQueued = false;
   setProtocolAutosaveStatus("Salvando...", "saving");
-  try {
-    const saved = await window.execej.saveProtocol(readProtocolForm());
-    const index = protocols.findIndex((protocol) => protocol.id === saved.id);
-    if (index >= 0) protocols[index] = saved;
-    else protocols.unshift(saved);
-    selectedProtocolId = saved.id;
-    setProtocolAutosaveStatus("Salvo automaticamente", "saved");
-    renderProtocols();
-  } catch (error) {
-    setProtocolAutosaveStatus("Falha ao salvar automaticamente", "error");
-    log(error.message || String(error));
-  } finally {
-    protocolAutosaveInFlight = false;
-    if (protocolAutosaveQueued) scheduleProtocolAutosave(150);
-  }
+  protocolAutosavePromise = (async () => {
+    try {
+      const saved = await window.execej.saveProtocol(readProtocolForm());
+      const index = protocols.findIndex((protocol) => protocol.id === saved.id);
+      if (index >= 0) protocols[index] = saved;
+      else protocols.unshift(saved);
+      selectedProtocolId = saved.id;
+      setProtocolAutosaveStatus("Salvo automaticamente", "saved");
+      renderProtocols();
+    } catch (error) {
+      setProtocolAutosaveStatus("Falha ao salvar automaticamente", "error");
+      log(error.message || String(error));
+    } finally {
+      protocolAutosaveInFlight = false;
+      if (protocolAutosaveQueued) scheduleProtocolAutosave(150);
+    }
+  })();
+  return protocolAutosavePromise;
 }
 
 function scheduleProtocolAutosave(delay = 650) {
@@ -1500,6 +1507,53 @@ function showProtocolDetail() {
   $("#protocolDetailView").hidden = false;
 }
 
+async function showAutuationPreview() {
+  const protocol = selectedProtocol();
+  const dialog = $("#autuationPreviewDialog");
+  const content = $("#autuationPreviewContent");
+  if (!protocol || dialog.open) return;
+
+  $("#autuationPreviewTitle").textContent = protocolDisplayLabel(protocol);
+  dialog.showModal();
+  const requestId = ++autuationPreviewRequestId;
+  if (!Object.keys(protocol.autuacoesMovimentacoes || {}).length) {
+    content.innerHTML = '<div class="autuation-preview-empty">Nenhuma movimentação foi autuada ainda.</div>';
+    return;
+  }
+  content.innerHTML = '<div class="autuation-preview-empty">Preparando PDF parcial...</div>';
+  try {
+    const preview = await window.execej.createAutuationPreview(protocol.id);
+    if (!dialog.open || requestId !== autuationPreviewRequestId) {
+      await window.execej.closeAutuationPreview(preview.id);
+      return;
+    }
+    activeAutuationPreviewId = preview.id;
+    const frame = document.createElement("iframe");
+    frame.src = localFileUrl(preview.filePath);
+    frame.title = "PDF parcial das movimentações autuadas";
+    content.replaceChildren(frame);
+  } catch (error) {
+    const message = error.message || String(error);
+    log(message);
+    if (dialog.open && requestId === autuationPreviewRequestId) {
+      const errorMessage = document.createElement("div");
+      errorMessage.className = "autuation-preview-empty";
+      errorMessage.textContent = `Não foi possível preparar a visualização: ${message}`;
+      content.replaceChildren(errorMessage);
+    }
+  }
+}
+
+function cleanupAutuationPreview() {
+  autuationPreviewRequestId += 1;
+  const previewId = activeAutuationPreviewId;
+  activeAutuationPreviewId = "";
+  $("#autuationPreviewContent").replaceChildren();
+  if (previewId) {
+    window.execej.closeAutuationPreview(previewId).catch((error) => log(error.message || String(error)));
+  }
+}
+
 function requirePrenotation() {
   if (!selectedProtocol()) return true;
   if ($("#protocolPrenotation").value.trim()) return true;
@@ -1574,6 +1628,7 @@ async function reloadProtocols(selectId = selectedProtocolId) {
 
 function clearSelectedProtocol() {
   selectedProtocolId = "";
+  updateProtocolAutuationLocks(null);
   showProtocolList();
   $$(".protocol-panel").forEach((panel) => panel.classList.remove("active"));
   renderProtocols();
@@ -1586,6 +1641,158 @@ function populateProtocolForm(protocol) {
   $("#protocolOds").value = protocol.odsPath || "";
   $("#protocolFolder").value = protocol.folderPath || protocolBaseDir(protocol);
   $("#activeProtocolTitle").textContent = protocolDisplayLabel(protocol);
+}
+
+function updateProtocolAutuationLocks(protocol) {
+  const locked = Object.keys(protocol?.autuacoesMovimentacoes || {}).length > 0;
+  const message = locked ? "Estorne todas as autuações antes de alterar estes dados." : "";
+  for (const id of ["protocolOffice", "protocolPrenotation", "protocolOds", "protocolFolder"]) {
+    const input = $(`#${id}`);
+    if (!input) continue;
+    input.readOnly = locked;
+    input.title = message;
+  }
+}
+
+function showMovementAttachmentsDialog(requirements) {
+  const dialog = $("#movementAttachmentsDialog");
+  const content = $("#movementAttachmentsContent");
+  if (!requirements.length) return Promise.resolve([]);
+
+  const groups = requirements.map((requirement) => ({ requirement, files: [] }));
+  const renderGroups = () => {
+    content.innerHTML = "";
+    groups.forEach(({ requirement, files }, groupIndex) => {
+      const section = document.createElement("section");
+      section.className = "movement-attachment-group";
+      const heading = document.createElement("div");
+      heading.className = "movement-attachment-group-heading";
+      const title = document.createElement("strong");
+      title.textContent = requirement.title;
+      const count = document.createElement("span");
+      count.textContent = `${files.length} arquivo(s)${requirement.single_file ? " · somente 1" : ""}`;
+      heading.append(title, count);
+
+      const list = document.createElement("select");
+      list.className = "movement-attachment-file-list";
+      list.size = Math.min(Math.max(files.length, 3), 6);
+      list.setAttribute("aria-label", `Ordem dos arquivos para ${requirement.title}`);
+      files.forEach((file, fileIndex) => {
+        const option = new Option(`${fileIndex + 1}. ${file.split(/[\\/]/).pop()}`, file);
+        list.add(option);
+      });
+      if (!files.length) {
+        const option = new Option("Nenhum arquivo selecionado", "");
+        option.disabled = true;
+        list.add(option);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "movement-attachment-actions";
+      const addButton = document.createElement("button");
+      addButton.type = "button";
+      addButton.textContent = "Adicionar arquivos";
+      addButton.disabled = Boolean(requirement.single_file && files.length);
+      addButton.addEventListener("click", async () => {
+        try {
+          const selectedFiles = await window.execej.pickFiles({
+            title: `Anexar ${requirement.title}`,
+            filters: [{ name: "Arquivos suportados", extensions: ["pdf", "odt", "ods", "jpg", "jpeg", "png", "bmp", "tif", "tiff"] }]
+          });
+          if (!selectedFiles.length) return;
+          if (requirement.single_file && files.length + selectedFiles.length > 1) {
+            alert(`"${requirement.title}" aceita somente um arquivo.`);
+            return;
+          }
+          files.push(...selectedFiles);
+          renderGroups();
+        } catch (error) {
+          const message = error.message || String(error);
+          log(message);
+          alert(message);
+        }
+      });
+
+      const removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.textContent = "Remover";
+      removeButton.disabled = !files.length;
+      removeButton.addEventListener("click", () => {
+        if (list.selectedIndex < 0) return;
+        files.splice(list.selectedIndex, 1);
+        renderGroups();
+      });
+
+      const moveUpButton = document.createElement("button");
+      moveUpButton.type = "button";
+      moveUpButton.textContent = "Subir";
+      moveUpButton.disabled = !files.length;
+      moveUpButton.addEventListener("click", () => {
+        const index = list.selectedIndex;
+        if (index <= 0) return;
+        [files[index - 1], files[index]] = [files[index], files[index - 1]];
+        renderGroups();
+        const updatedList = content.querySelectorAll(".movement-attachment-file-list")[groupIndex];
+        updatedList.selectedIndex = index - 1;
+      });
+
+      const moveDownButton = document.createElement("button");
+      moveDownButton.type = "button";
+      moveDownButton.textContent = "Descer";
+      moveDownButton.disabled = !files.length;
+      moveDownButton.addEventListener("click", () => {
+        const index = list.selectedIndex;
+        if (index < 0 || index >= files.length - 1) return;
+        [files[index + 1], files[index]] = [files[index], files[index + 1]];
+        renderGroups();
+        const updatedList = content.querySelectorAll(".movement-attachment-file-list")[groupIndex];
+        updatedList.selectedIndex = index + 1;
+      });
+
+      actions.append(addButton, removeButton, moveUpButton, moveDownButton);
+      section.append(heading, list, actions);
+      content.appendChild(section);
+    });
+  };
+
+  renderGroups();
+  dialog.showModal();
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      dialog.removeEventListener("cancel", handleCancel);
+      $("#cancelMovementAttachments").removeEventListener("click", handleCancel);
+      $("#cancelMovementAttachmentsFooter").removeEventListener("click", handleCancel);
+      $("#confirmMovementAttachments").removeEventListener("click", handleConfirm);
+    };
+    const finish = (value) => {
+      cleanup();
+      dialog.close();
+      resolve(value);
+    };
+    const handleCancel = (event) => {
+      event?.preventDefault();
+      finish(null);
+    };
+    const handleConfirm = () => {
+      const missing = groups.find(({ files }) => !files.length);
+      if (missing) {
+        alert(`Adicione pelo menos um arquivo em "${missing.requirement.title}".`);
+        return;
+      }
+      finish(groups.map(({ requirement, files }) => ({ title: requirement.title, files: [...files] })));
+    };
+    dialog.addEventListener("cancel", handleCancel);
+    $("#cancelMovementAttachments").addEventListener("click", handleCancel);
+    $("#cancelMovementAttachmentsFooter").addEventListener("click", handleCancel);
+    $("#confirmMovementAttachments").addEventListener("click", handleConfirm);
+  });
+}
+
+function setProtocolAutuationBusy(busy) {
+  for (const selector of ["#protocolData", "#protocolSheets", ".protocol-subtabs"]) {
+    const panel = $(selector);
+    if (panel) panel.inert = busy;
+  }
 }
 
 function columnLabel(index) {
@@ -1652,6 +1859,11 @@ function renderProtocolSheetTable() {
   protocol.sheets[selectedProtocolSheetName] = cloneSheetRows(rows);
   const visibleColumns = editableProtocolSheetColumns(selectedProtocolSheetName, rows);
   const headerRowIndex = sheetHeaderRowIndex(selectedProtocolSheetName, rows);
+  const isMovementSheet = protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES";
+  const movementColumnIndex = isMovementSheet
+    ? (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "MOVIMENTACAO")
+    : -1;
+  table.classList.toggle("movement-sheet-table", isMovementSheet);
   const rowCount = Math.max(rows.length, headerRowIndex + 2);
   table.innerHTML = "";
   const thead = document.createElement("thead");
@@ -1665,8 +1877,16 @@ function renderProtocolSheetTable() {
     th.textContent = headerText;
     th.title = headerText || columnLabel(colIndex);
     th.dataset.colIndex = String(colIndex);
+    if (isMovementSheet && colIndex === movementColumnIndex) th.classList.add("movement-name-column");
+    if (isMovementSheet && normalizeUiKey(headerText) === "DATA") th.classList.add("movement-date-column");
     th.addEventListener("click", () => setProtocolSheetSelection(-1, colIndex));
     headRow.appendChild(th);
+  }
+  if (isMovementSheet) {
+    const autuationHeading = document.createElement("th");
+    autuationHeading.className = "movement-autuation-heading";
+    autuationHeading.textContent = "Autuação";
+    headRow.appendChild(autuationHeading);
   }
   thead.appendChild(headRow);
   const tbody = document.createElement("tbody");
@@ -1682,17 +1902,118 @@ function renderProtocolSheetTable() {
     rowHead.dataset.rowIndex = String(rowIndex);
     rowHead.addEventListener("click", () => setProtocolSheetSelection(rowIndex, -1));
     tr.appendChild(rowHead);
+    let movementEditor = null;
     for (const colIndex of visibleColumns) {
       const td = document.createElement("td");
       td.dataset.rowIndex = String(rowIndex);
       td.dataset.colIndex = String(colIndex);
-      td.appendChild(createProtocolSheetCellEditor(selectedProtocolSheetName, rows, rowIndex, colIndex));
+      const editor = createProtocolSheetCellEditor(selectedProtocolSheetName, rows, rowIndex, colIndex);
+      if (isMovementSheet && colIndex === movementColumnIndex) movementEditor = editor;
+      if (isMovementSheet && colIndex === movementColumnIndex) td.classList.add("movement-name-column");
+      if (isMovementSheet && normalizeUiKey(sheetColumnHeader(rows, headerRowIndex, colIndex)) === "DATA") {
+        td.classList.add("movement-date-column");
+      }
+      if (isMovementSheet && protocol.autuacoesMovimentacoes?.[String(rowIndex)]) {
+        editor.disabled = true;
+        editor.title = "Estorne a autuação para editar esta movimentação.";
+      }
+      td.appendChild(editor);
       tr.appendChild(td);
+    }
+    if (isMovementSheet) {
+      const autuationCell = document.createElement("td");
+      autuationCell.className = "movement-autuation-cell";
+      const movementName = String(rows[rowIndex]?.[movementColumnIndex] || "").trim();
+      const autuation = protocol.autuacoesMovimentacoes?.[String(rowIndex)];
+      if (autuation) {
+        const completedButton = document.createElement("button");
+        completedButton.type = "button";
+        completedButton.className = "movement-autuated";
+        completedButton.textContent = "Autuado";
+        completedButton.disabled = true;
+
+        const undoButton = document.createElement("button");
+        undoButton.type = "button";
+        undoButton.className = "movement-autuation-undo";
+        undoButton.setAttribute("aria-label", "Estornar Autuação");
+        undoButton.title = "Estornar Autuação";
+        undoButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-4L3 10"/><path d="M3 4v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4L21 14"/><path d="M21 20v-6h-6"/></svg>';
+        undoButton.addEventListener("click", () => handleMovementAutuation(rowIndex, true, undoButton));
+        autuationCell.append(completedButton, undoButton);
+      } else {
+        const autuateButton = document.createElement("button");
+        autuateButton.type = "button";
+        autuateButton.className = "movement-autuation-start";
+        autuateButton.textContent = "Autuar";
+        autuateButton.disabled = !movementName;
+        autuateButton.title = movementName ? "" : "Preencha a movimentação antes de autuar.";
+        autuateButton.addEventListener("click", () => handleMovementAutuation(rowIndex, false, autuateButton));
+        movementEditor?.addEventListener("input", () => {
+          autuateButton.disabled = !movementEditor.value.trim();
+          autuateButton.title = autuateButton.disabled ? "Preencha a movimentação antes de autuar." : "";
+        });
+        autuationCell.appendChild(autuateButton);
+      }
+      tr.appendChild(autuationCell);
     }
     tbody.appendChild(tr);
   }
   table.append(thead, tbody);
   updateProtocolSheetSelection();
+}
+
+async function handleMovementAutuation(sourceRowIndex, undo, button) {
+  if (undo && !confirm("Estornar esta autuação? Os PDFs gerados para ela serão removidos da pasta Autuação\\PDFs.")) return;
+  if (!undo && !requirePrenotation()) return;
+  const protocol = selectedProtocol();
+  if (!protocol) return;
+  button.disabled = true;
+  if (!undo) button.textContent = "Autuando...";
+  setProtocolAutuationBusy(true);
+  clearTimeout(protocolAutosaveTimer);
+  try {
+    await saveCurrentProtocolSilently();
+    let attachments = [];
+    if (!undo) {
+      const attachmentRequirements = await window.execej.movementAttachmentRequirements({
+        ...protocolPayload(),
+        sheetName: selectedProtocolSheetName,
+        sourceRowIndex
+      });
+      const selectedAttachments = await showMovementAttachmentsDialog(attachmentRequirements);
+      if (selectedAttachments === null) {
+        button.disabled = false;
+        button.textContent = "Autuar";
+        return;
+      }
+      attachments = selectedAttachments;
+    }
+    const action = undo ? window.execej.estornarAutuacao : window.execej.autuarMovimentacao;
+    const result = await action({
+      ...protocolPayload(),
+      ...signaturePayload($("#finalSigner"), $("#finalSignerCargo")),
+      sheetName: selectedProtocolSheetName,
+      sourceRowIndex,
+      attachments
+    });
+    const index = protocols.findIndex((item) => item.id === result.protocol.id);
+    if (index >= 0) protocols[index] = result.protocol;
+    else protocols.unshift(result.protocol);
+    selectedProtocolId = result.protocol.id;
+    updateProtocolAutuationLocks(result.protocol);
+    setProtocolAutosaveStatus("Salvo automaticamente", "saved");
+    renderProtocols();
+    renderProtocolSheetTable();
+    scheduleProtocolFileRefresh();
+  } catch (error) {
+    const message = error.message || String(error);
+    log(message);
+    alert(message);
+    button.disabled = false;
+    if (!undo) button.textContent = "Autuar";
+  } finally {
+    setProtocolAutuationBusy(false);
+  }
 }
 
 function renderProtocolSheets() {
@@ -1739,7 +2060,21 @@ function deleteProtocolSheetRow() {
     alert("Essa linha faz parte da estrutura da guia.");
     return;
   }
+  const isMovementSheet = protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES";
+  const autuacoesMovimentacoes = protocol.autuacoesMovimentacoes || {};
+  if (isMovementSheet && autuacoesMovimentacoes[String(selectedProtocolSheetRow)]) {
+    alert("Estorne a autuação antes de apagar esta movimentação.");
+    return;
+  }
   if (!confirm(`Apagar a linha ${selectedProtocolSheetRow + 1}?`)) return;
+  if (isMovementSheet) {
+    const updatedAutuacoes = {};
+    for (const [rowKey, record] of Object.entries(autuacoesMovimentacoes)) {
+      const rowIndex = Number(rowKey);
+      updatedAutuacoes[String(rowIndex > selectedProtocolSheetRow ? rowIndex - 1 : rowIndex)] = record;
+    }
+    protocol.autuacoesMovimentacoes = updatedAutuacoes;
+  }
   rows.splice(selectedProtocolSheetRow, 1);
   if (!rows.length) rows.push([""]);
   setProtocolSheetSelection();
@@ -1751,6 +2086,10 @@ function deleteProtocolSheetColumn() {
   persistVisibleSheetToMemory();
   const protocol = selectedProtocol();
   if (!protocol || !selectedProtocolSheetName || selectedProtocolSheetColumn < 0) return;
+  if (protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES" && Object.keys(protocol.autuacoesMovimentacoes || {}).length) {
+    alert("Estorne as autuações da guia antes de apagar uma coluna.");
+    return;
+  }
   const rows = protocol.sheets?.[selectedProtocolSheetName] || [[]];
   const visibleColumns = editableProtocolSheetColumns(selectedProtocolSheetName, rows);
   if (!visibleColumns.includes(selectedProtocolSheetColumn)) return;
@@ -1778,6 +2117,7 @@ function selectProtocol(id) {
   if (!protocol) return;
   closeProtocolFilePreview();
   selectedProtocolId = id;
+  updateProtocolAutuationLocks(protocol);
   setProtocolSheetSelection();
   showProtocolDetail();
   populateProtocolForm(protocol);
@@ -1794,6 +2134,10 @@ async function saveSelectedProtocol() {
 
 async function saveCurrentProtocolSilently() {
   if (!selectedProtocol()) return;
+  clearTimeout(protocolAutosaveTimer);
+  if (protocolAutosaveInFlight) await protocolAutosavePromise;
+  clearTimeout(protocolAutosaveTimer);
+  protocolAutosaveQueued = false;
   setProtocolAutosaveStatus("Salvando...", "saving");
   const saved = await window.execej.saveProtocol(readProtocolForm());
   const index = protocols.findIndex((protocol) => protocol.id === saved.id);
@@ -1821,13 +2165,17 @@ async function importProtocolOds() {
 async function pickProtocolOds() {
   const path = await window.execej.pickFile({ title: "Selecionar protocolo ODS", filters: fileFilters("ods") });
   if (!path) return;
+  const current = selectedProtocol();
+  if (Object.keys(current?.autuacoesMovimentacoes || {}).length) {
+    alert("Estorne as autuações antes de substituir a planilha do protocolo.");
+    return;
+  }
   const inspected = await window.execej.inspectProtocolOds(path);
   $("#protocolOds").value = inspected.odsPath || path;
   if (inspected.sheetOrder && inspected.sheets) {
-    const protocol = selectedProtocol();
-    if (protocol) {
-      protocol.sheetOrder = inspected.sheetOrder;
-      protocol.sheets = inspected.sheets;
+    if (current) {
+      current.sheetOrder = inspected.sheetOrder;
+      current.sheets = inspected.sheets;
       selectedProtocolSheetName = inspected.sheetOrder[0] || "";
       setProtocolSheetSelection();
       renderProtocolSheets();
@@ -1856,6 +2204,9 @@ function initProtocols() {
   $("#importProtocolOds").addEventListener("click", importProtocolOds);
   $("#protocolSearch").addEventListener("input", renderProtocols);
   $("#backToProtocolList").addEventListener("click", showProtocolList);
+  $("#previewAutuations").addEventListener("click", showAutuationPreview);
+  $("#closeAutuationPreview").addEventListener("click", () => $("#autuationPreviewDialog").close());
+  $("#autuationPreviewDialog").addEventListener("close", cleanupAutuationPreview);
   $("#saveProtocol").addEventListener("click", saveSelectedProtocol);
   $("#saveProtocolSheets").addEventListener("click", saveSelectedProtocol);
   $("#addSheetRow").addEventListener("click", addProtocolSheetRow);

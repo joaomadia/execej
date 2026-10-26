@@ -18,14 +18,14 @@
     </header>
 
     <nav class="tabs" aria-label="Navegação principal">
-      <button class="active" data-tab="config" title="Configurações">Configurações</button>
-      <button data-tab="protocols" title="Protocolo">Protocolo</button>
+      <button class="active" data-tab="protocols" title="Protocolo">Protocolo</button>
       <button data-tab="arisp" title="Estatísticas ARISP">Estatísticas ARISP</button>
+      <button data-tab="config" title="Configurações">Configurações</button>
     </nav>
   </aside>
 
   <main>
-    <section id="config" class="tab active">
+    <section id="config" class="tab">
       <div class="page-heading">
         <div class="eyebrow">SISTEMA</div>
         <h2>Configurações</h2>
@@ -127,7 +127,7 @@
       </div>
     </section>
 
-    <section id="protocols" class="tab">
+    <section id="protocols" class="tab active">
       <div class="protocol-layout">
         <div id="protocolListView" class="protocol-list-view">
           <div class="page-heading">
@@ -154,6 +154,7 @@
               <div class="section-title" id="activeProtocolTitle"></div>
               <div class="muted" id="protocolAutosaveStatus">Salvo automaticamente</div>
             </div>
+            <button id="previewAutuations" class="preview-autuations-button" type="button">Visualizar</button>
           </div>
           <nav class="protocol-subtabs">
             <div class="protocol-tab-group">
@@ -387,6 +388,31 @@
       <p class="muted" id="arispSummary">A data mínima é junho de 2026. Meses posteriores à data atual não são aceitos.</p>
     </section>
   </main>
+
+  <dialog id="movementAttachmentsDialog" class="movement-attachments-dialog">
+    <div class="movement-attachments-dialog-header">
+      <div>
+        <h2>Anexos</h2>
+        <p>Selecione os arquivos e ajuste a ordem em que serão juntados à movimentação.</p>
+      </div>
+      <button id="cancelMovementAttachments" class="icon-button" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div id="movementAttachmentsContent" class="movement-attachments-content"></div>
+    <div class="movement-attachments-dialog-actions">
+      <button id="cancelMovementAttachmentsFooter" type="button">Cancelar</button>
+      <button id="confirmMovementAttachments" type="button">Continuar autuação</button>
+    </div>
+  </dialog>
+
+  <dialog id="autuationPreviewDialog" class="autuation-preview-dialog" aria-labelledby="autuationPreviewTitle">
+    <header class="autuation-preview-header">
+      <h2 id="autuationPreviewTitle"></h2>
+      <button id="closeAutuationPreview" type="button">Voltar</button>
+    </header>
+    <div id="autuationPreviewContent" class="autuation-preview-content">
+      <div class="autuation-preview-empty">Carregando prévia...</div>
+    </div>
+  </dialog>
 
   <footer>
     <pre id="log"></pre>

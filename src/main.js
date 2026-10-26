@@ -11,6 +11,25 @@ autoUpdater.logger = log;
 autoUpdater.autoDownload = false;
 
 let mainWindow;
+const autuationPreviewDirs = new Map();
+
+function removeAutuationPreview(id) {
+  const dir = autuationPreviewDirs.get(id);
+  if (!dir) return false;
+  fs.rmSync(dir, { recursive: true, force: true });
+  autuationPreviewDirs.delete(id);
+  return true;
+}
+
+function removeAllAutuationPreviews() {
+  for (const id of autuationPreviewDirs.keys()) {
+    try {
+      removeAutuationPreview(id);
+    } catch (error) {
+      log.error(`Não foi possível remover a prévia temporária ${id}:`, error);
+    }
+  }
+}
 
 const CONFIG_FILE = "config_execej.json";
 const PROTOCOLS_FILE = "protocolos_execej.json";
@@ -241,6 +260,24 @@ function normalizeProtocol(protocol = {}, touch = true) {
     createdAt: protocol.createdAt || now,
     updatedAt: touch ? now : (protocol.updatedAt || now)
   };
+  normalized.autuacoesMovimentacoes = Object.fromEntries(
+    Object.entries(protocol.autuacoesMovimentacoes && typeof protocol.autuacoesMovimentacoes === "object" ? protocol.autuacoesMovimentacoes : {})
+      .filter(([rowIndex, record]) => /^\d+$/.test(rowIndex) && record && Array.isArray(record.files))
+      .map(([rowIndex, record]) => [rowIndex, {
+        files: record.files.map((file) => String(file || "").trim()).filter(Boolean),
+        parts: Array.isArray(record.parts)
+          ? record.parts.map((part) => ({
+            file: String(part.file || "").trim(),
+            order: Number(part.order) || 0
+          })).filter((part) => part.file)
+          : [],
+        hasAttachments: Boolean(record.hasAttachments),
+        movement: String(record.movement || "").trim(),
+        documentName: String(record.documentName || "").trim(),
+        autuadoEm: String(record.autuadoEm || "")
+      }])
+      .filter(([, record]) => record.files.length > 0)
+  );
   const config = loadConfig();
   const workbook = core.applyProtocolWorkbookCalculations(workbookForProtocol(protocol), {
     prenotation,
@@ -512,6 +549,7 @@ function createWindow() {
     }
   });
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  mainWindow.on("closed", removeAllAutuationPreviews);
 }
 
 app.whenReady().then(() => {
@@ -554,12 +592,88 @@ ipcMain.handle("initial:create", (_event, payload) => core.createInitialFolder(l
 ipcMain.handle("movements:analyze", (_event, payload) => withProtocolOds(payload, (odsPath) => (
   core.analyzeMovements(odsPath, payload.sheetName, loadConfig())
 )));
+ipcMain.handle("movements:attachmentRequirements", (_event, payload) => withProtocolOds(payload, (odsPath) => (
+  core.movementAttachmentRequirements(odsPath, payload.sheetName, payload.sourceRowIndex, loadConfig())
+)));
+ipcMain.handle("movements:autuationPreview", async (_event, protocolId) => {
+  const protocol = findProtocol(String(protocolId || "").trim());
+  if (!protocol) throw new Error("Selecione um protocolo válido para visualizar as autuações.");
+  const id = crypto.randomUUID();
+  const tempDir = fs.mkdtempSync(path.join(app.getPath("temp"), "execej_autuacao_preview_"));
+  try {
+    const filePath = await core.createAutuationPreview(
+      protocol.autuacoesMovimentacoes,
+      protocol.folderPath,
+      tempDir
+    );
+    autuationPreviewDirs.set(id, tempDir);
+    return { id, filePath };
+  } catch (error) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    throw error;
+  }
+});
+ipcMain.handle("movements:autuationPreview:close", (_event, id) => (
+  removeAutuationPreview(String(id || ""))
+));
+ipcMain.handle("movements:autuar", async (_event, payload) => {
+  const protocolId = String(payload?.protocolId || "").trim();
+  const sourceRowIndex = Number(payload?.sourceRowIndex);
+  if (!protocolId || !Number.isInteger(sourceRowIndex) || sourceRowIndex < 0) {
+    throw new Error("Selecione um protocolo e uma movimentação válidos para autuar.");
+  }
+  return withProtocolOds(payload, async (odsPath, protocol) => {
+    const rowKey = String(sourceRowIndex);
+    if (protocol.autuacoesMovimentacoes?.[rowKey]) throw new Error("Esta movimentação já foi autuada.");
+    const protocolFolder = payload.protocolFolder || protocol.folderPath;
+    const generated = await core.autuarMovimentacao(loadConfig(), {
+      ...payload,
+      odsPath,
+      protocolFolder
+    });
+    const autuacoesMovimentacoes = {
+      ...(protocol.autuacoesMovimentacoes || {}),
+      [rowKey]: {
+        files: generated.files,
+        parts: generated.parts,
+        hasAttachments: generated.hasAttachments,
+        movement: generated.movement,
+        documentName: generated.documentName,
+        autuadoEm: new Date().toISOString()
+      }
+    };
+    try {
+      const saved = saveProtocol({ ...protocol, autuacoesMovimentacoes });
+      return { protocol: saved };
+    } catch (error) {
+      core.estornarAutuacaoFiles(protocolFolder, generated.files);
+      throw error;
+    }
+  });
+});
+ipcMain.handle("movements:estornarAutuacao", async (_event, payload) => {
+  const protocolId = String(payload?.protocolId || "").trim();
+  const sourceRowIndex = Number(payload?.sourceRowIndex);
+  if (!protocolId || !Number.isInteger(sourceRowIndex) || sourceRowIndex < 0) {
+    throw new Error("Selecione um protocolo e uma movimentação válidos para estornar.");
+  }
+  const protocol = findProtocol(protocolId);
+  if (!protocol) throw new Error("Selecione um protocolo válido.");
+  const rowKey = String(sourceRowIndex);
+  const autuacao = protocol.autuacoesMovimentacoes?.[rowKey];
+  if (!autuacao) throw new Error("Esta movimentação não possui autuação registrada.");
+  core.estornarAutuacaoFiles(protocol.folderPath, autuacao.files);
+  const autuacoesMovimentacoes = { ...protocol.autuacoesMovimentacoes };
+  delete autuacoesMovimentacoes[rowKey];
+  return { protocol: saveProtocol({ ...protocol, autuacoesMovimentacoes }) };
+});
 ipcMain.handle("finalPdf:generate", async (event, payload) => {
   return withProtocolOds(payload, (odsPath, protocol) => {
     return core.generateFinalPdf(loadConfig(), {
       ...payload,
       odsPath,
-      protocolFolder: payload.protocolFolder || protocol?.folderPath || ""
+      protocolFolder: payload.protocolFolder || protocol?.folderPath || "",
+      autuacoesMovimentacoes: protocol?.autuacoesMovimentacoes || {}
     }, (message) => {
       event.sender.send("finalPdf:progress", message);
     });
