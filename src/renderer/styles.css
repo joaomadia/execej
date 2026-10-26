@@ -1323,15 +1323,17 @@ header button::before {
 
 .tabs button {
   position: relative;
+  width: 46px;
   min-height: 42px;
+  align-self: flex-start;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 10px 11px;
+  padding: 10px 0;
   color: #c1cfda;
   background: transparent;
   font-size: 0;
   font-weight: 600;
-  text-align: left;
+  text-align: center;
   white-space: nowrap;
 }
 
@@ -1364,7 +1366,10 @@ header button::before {
 
 .app-sidebar:hover .tabs button,
 .app-sidebar:has(:focus-visible) .tabs button {
+  width: 100%;
+  padding: 10px 11px;
   font-size: 13px;
+  text-align: left;
 }
 
 .app-sidebar:hover .tabs button::before,
