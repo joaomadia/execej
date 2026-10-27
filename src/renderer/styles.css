@@ -352,9 +352,9 @@ main {
 }
 
 .sheet-table.movement-sheet-table {
-  width: 100%;
-  min-width: 0;
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
 }
 
 .movement-sheet-table th[data-col-index],
