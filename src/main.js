@@ -453,7 +453,8 @@ function normalizeProtocol(protocol = {}, touch = true) {
     folderPath,
     status: prenotation ? "Vinculado" : "Rascunho",
     createdAt: protocol.createdAt || now,
-    updatedAt: touch ? now : (protocol.updatedAt || now)
+    updatedAt: touch ? now : (protocol.updatedAt || now),
+    imageExportPath: String(protocol.imageExportPath || "").trim()
   };
   normalized.autuacoesMovimentacoes = Object.fromEntries(
     Object.entries(protocol.autuacoesMovimentacoes && typeof protocol.autuacoesMovimentacoes === "object" ? protocol.autuacoesMovimentacoes : {})
@@ -802,9 +803,13 @@ ipcMain.handle("initial:create", (_event, payload) => core.createInitialFolder(l
 ipcMain.handle("movements:analyze", (_event, payload) => withProtocolOds(payload, (odsPath) => (
   core.analyzeMovements(odsPath, payload.sheetName, loadConfig())
 )));
-ipcMain.handle("movements:attachmentRequirements", (_event, payload) => withProtocolOds(payload, (odsPath) => (
-  core.movementAttachmentRequirements(odsPath, payload.sheetName, payload.sourceRowIndex, loadConfig())
-)));
+ipcMain.handle("movements:attachmentRequirements", (_event, payload) => withProtocolOds(payload, (odsPath) => {
+  const config = loadConfig();
+  return {
+    requirements: core.movementAttachmentRequirements(odsPath, payload.sheetName, payload.sourceRowIndex, config),
+    requiresSignature: core.movementRequiresOnrSignature(odsPath, payload.sheetName, payload.sourceRowIndex, config)
+  };
+}));
 ipcMain.handle("movements:autuationPreview", async (_event, protocolId) => {
   const protocol = findProtocol(String(protocolId || "").trim());
   if (!protocol) throw new Error("Selecione um protocolo válido para visualizar as autuações.");
@@ -836,7 +841,8 @@ ipcMain.handle("movements:autuar", async (_event, payload) => {
     const rowKey = String(sourceRowIndex);
     if (protocol.autuacoesMovimentacoes?.[rowKey]) throw new Error("Esta movimentação já foi autuada.");
     const protocolFolder = payload.protocolFolder || protocol.folderPath;
-    const generated = await core.autuarMovimentacao(loadConfig(), {
+    const config = loadConfig();
+    const generated = await core.autuarMovimentacao(config, {
       ...payload,
       odsPath,
       protocolFolder
@@ -852,19 +858,42 @@ ipcMain.handle("movements:autuar", async (_event, payload) => {
         autuadoEm: new Date().toISOString()
       }
     };
+    let saved;
     try {
       if (payload.certificateThumbprint) {
         if (!generated.signatureFiles.length) {
-          throw new Error("Não foi encontrada a folha de autuação com Nome e Cargo para assinatura.");
+          throw new Error("A assinatura foi solicitada, mas nenhum PDF gerado corresponde a um modelo com os campos NOME_ASSINA e CARGO_ASSINA.");
         }
         await signOnrPdfFiles(generated.signatureFiles, payload.certificateThumbprint);
       }
-      const saved = saveProtocol({ ...protocol, autuacoesMovimentacoes });
-      return { protocol: saved };
+      saved = saveProtocol({ ...protocol, autuacoesMovimentacoes });
     } catch (error) {
       core.estornarAutuacaoFiles(protocolFolder, generated.files);
       throw error;
     }
+    let imageExportWarning = "";
+    if (config.image_autuation_enabled) {
+      try {
+        const imageExport = await core.exportAutuationImage(
+          autuacoesMovimentacoes,
+          protocolFolder,
+          config.image_output_folder,
+          config.image_output_format,
+          config.image_output_filename,
+          core.protocolContextFromValues({
+            officeProtocol: protocol.officeProtocol || payload.officeProtocol,
+            prenotation: protocol.prenotation || payload.prenotation
+          }, odsPath),
+          protocol.imageExportPath,
+          config.image_output_bucket_size,
+          config.image_output_folder_pattern
+        );
+        saved = saveProtocol({ ...saved, imageExportPath: imageExport.outputPath });
+      } catch (error) {
+        imageExportWarning = `A autuação foi salva, mas não foi possível atualizar o arquivo vinculado no IMAGE: ${error.message}`;
+      }
+    }
+    return { protocol: saved, imageExportWarning };
   });
 });
 ipcMain.handle("movements:estornarAutuacao", async (_event, payload) => {
@@ -881,7 +910,28 @@ ipcMain.handle("movements:estornarAutuacao", async (_event, payload) => {
   core.estornarAutuacaoFiles(protocol.folderPath, autuacao.files);
   const autuacoesMovimentacoes = { ...protocol.autuacoesMovimentacoes };
   delete autuacoesMovimentacoes[rowKey];
-  return { protocol: saveProtocol({ ...protocol, autuacoesMovimentacoes }) };
+  const config = loadConfig();
+  let saved = saveProtocol({ ...protocol, autuacoesMovimentacoes });
+  let imageExportWarning = "";
+  if (config.image_autuation_enabled) {
+    try {
+      const imageExport = await core.exportAutuationImage(
+        autuacoesMovimentacoes,
+        protocol.folderPath,
+        config.image_output_folder,
+        config.image_output_format,
+        config.image_output_filename,
+        core.protocolContextFromValues(protocol),
+        protocol.imageExportPath,
+        config.image_output_bucket_size,
+        config.image_output_folder_pattern
+      );
+      saved = saveProtocol({ ...saved, imageExportPath: imageExport.outputPath });
+    } catch (error) {
+      imageExportWarning = `O estorno foi salvo, mas não foi possível atualizar o arquivo vinculado no IMAGE: ${error.message}`;
+    }
+  }
+  return { protocol: saved, imageExportWarning };
 });
 ipcMain.handle("finalPdf:generate", async (event, payload) => {
   return withProtocolOds(payload, async (odsPath, protocol) => {

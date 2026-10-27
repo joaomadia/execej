@@ -537,6 +537,16 @@ main {
 .signature-config textarea {
   min-height: 92px;
 }
+.image-autuation-setting {
+  margin: 4px 0 12px;
+}
+.image-format-options {
+  max-width: 320px;
+}
+.image-bucket-size {
+  max-width: 320px;
+  margin-bottom: 12px;
+}
 .section-title {
   font-weight: 650;
   margin-bottom: 10px;

@@ -196,6 +196,10 @@ function configKeys() {
     "base_protocol_template",
     "models_folder",
     "note_requirement_model",
+    "image_output_folder",
+    "image_output_bucket_size",
+    "image_output_folder_pattern",
+    "image_output_filename",
     "notifications_sheet",
     "notifications_name_col",
     "base_prenotation_value",
@@ -674,6 +678,13 @@ function fillConfig() {
   $("#onr_signature_enabled").checked = Boolean(config.onr_signature_enabled);
   $("#onr_api_key").value = config.onr_api_key || "";
   $("#onrApiKeySetting").hidden = !config.onr_signature_enabled;
+  $("#image_autuation_enabled").checked = Boolean(config.image_autuation_enabled);
+  $("#imageExportSettings").hidden = !config.image_autuation_enabled;
+  const imageFormat = config.image_output_format === "pdf" ? "pdf" : "tiff";
+  $(`input[name="image_output_format"][value="${imageFormat}"]`).checked = true;
+  $("#image_output_bucket_size").value = config.image_output_bucket_size || 1000;
+  $("#image_output_folder_pattern").value = config.image_output_folder_pattern || "{<0^8}.{FAIXA}";
+  $("#image_output_filename").value = config.image_output_filename || "{<0^8}.{PRENOT}";
   $("#noteModel").value = config.note_requirement_model || "";
   $("#attachSheet").value = config.movements_sheet || "Movimentações";
   updateArispSearchRoot();
@@ -693,6 +704,11 @@ function readConfig() {
   data.default_signature_name = $("#default_signature_name")?.value?.trim() || "";
   data.onr_signature_enabled = $("#onr_signature_enabled").checked;
   data.onr_api_key = $("#onr_api_key").value.trim();
+  data.image_autuation_enabled = $("#image_autuation_enabled").checked;
+  data.image_output_format = $('input[name="image_output_format"]:checked')?.value || "tiff";
+  data.image_output_bucket_size = Number($("#image_output_bucket_size").value);
+  data.image_output_folder_pattern = $("#image_output_folder_pattern").value.trim();
+  data.image_output_filename = $("#image_output_filename").value.trim();
   const defaultSigner = data.signers.find((signer) => signer.name === data.default_signature_name);
   data.default_signature_cargo = defaultSigner?.cargo || "";
   return data;
@@ -2087,7 +2103,7 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
     let attachments = [];
     let signature = signaturePayload($("#finalSigner"), $("#finalSignerCargo"));
     if (!undo) {
-      const attachmentRequirements = await window.execej.movementAttachmentRequirements({
+      const { requirements: attachmentRequirements, requiresSignature } = await window.execej.movementAttachmentRequirements({
         ...protocolPayload(),
         sheetName: selectedProtocolSheetName,
         sourceRowIndex
@@ -2099,11 +2115,13 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
         return;
       }
       attachments = selectedAttachments;
-      signature = await addOnrCertificateForSignature(signature);
-      if (!signature) {
-        button.disabled = false;
-        button.textContent = "Autuar";
-        return;
+      if (requiresSignature) {
+        signature = await addOnrCertificateForSignature(signature);
+        if (!signature) {
+          button.disabled = false;
+          button.textContent = "Autuar";
+          return;
+        }
       }
     }
     const action = undo ? window.execej.estornarAutuacao : window.execej.autuarMovimentacao;
@@ -2123,6 +2141,10 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
     renderProtocols();
     renderProtocolSheetTable();
     scheduleProtocolFileRefresh();
+    if (result.imageExportWarning) {
+      log(result.imageExportWarning);
+      alert(result.imageExportWarning);
+    }
   } catch (error) {
     const message = error.message || String(error);
     log(message);
@@ -2767,6 +2789,9 @@ function initConfig() {
   $("#onr_signature_enabled").addEventListener("change", (event) => {
     $("#onrApiKeySetting").hidden = !event.currentTarget.checked;
   });
+  $("#image_autuation_enabled").addEventListener("change", (event) => {
+    $("#imageExportSettings").hidden = !event.currentTarget.checked;
+  });
   $("#addMovementRule").addEventListener("click", () => addMovementRuleRow({ quantity: "1+" }));
   $("#resetMovementRules").addEventListener("click", () => renderMovementRules(cloneDefaultMovementRows()));
   $("#addMovementPrefill").addEventListener("click", () => addMovementPrefillRow(""));
@@ -2781,6 +2806,28 @@ function initConfig() {
       alert("Informe a X-Api-Key da ONR antes de ativar a assinatura.");
       $("#onr_api_key").focus();
       return;
+    }
+    if (data.image_autuation_enabled) {
+      if (!data.image_output_folder) {
+        alert("Escolha a pasta para salvar as imagens geradas pelo vínculo com o IMAGE.");
+        $("#image_output_folder").focus();
+        return;
+      }
+      if (!data.image_output_filename) {
+        alert("Informe o padrão do nome do arquivo do IMAGE.");
+        $("#image_output_filename").focus();
+        return;
+      }
+      if (!Number.isSafeInteger(data.image_output_bucket_size) || data.image_output_bucket_size < 1) {
+        alert("Informe uma faixa de prenotações válida, usando um número inteiro positivo.");
+        $("#image_output_bucket_size").focus();
+        return;
+      }
+      if (!data.image_output_folder_pattern) {
+        alert("Informe o padrão das subpastas do IMAGE.");
+        $("#image_output_folder_pattern").focus();
+        return;
+      }
     }
     config = await run("Configurações salvas.", () => window.execej.saveConfig(data));
     fillConfig();

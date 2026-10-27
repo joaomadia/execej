@@ -69,10 +69,10 @@ const MOVEMENT_PREFILL_OPTIONS = [
 ];
 
 const DEFAULT_CONFIG = {
-  initial_folder_root: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\Prenotados",
+  initial_folder_root: "",
   base_protocol_template: "",
-  models_folder: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\MODELOS",
-  note_requirement_model: "Z:\\CARTORIO\\Notificações extrajudiciais - ARISP\\MODELOS\\Nota de Exigência.MODELO.odt",
+  models_folder: "",
+  note_requirement_model: "",
   notifications_sheet: "Notificações",
   notifications_name_col: "E",
   base_prenotation_value: "81,56",
@@ -86,7 +86,13 @@ const DEFAULT_CONFIG = {
   default_signature_name: "",
   default_signature_cargo: "",
   onr_signature_enabled: false,
-  onr_api_key: ""
+  onr_api_key: "",
+  image_autuation_enabled: false,
+  image_output_folder: "",
+  image_output_bucket_size: 1000,
+  image_output_folder_pattern: "{<0^8}.{FAIXA}",
+  image_output_format: "tiff",
+  image_output_filename: "{<0^8}.{PRENOT}"
 };
 
 const DEFAULT_PROTOCOL_SHEET_NAMES = [
@@ -1291,6 +1297,17 @@ function normalizeConfig(config = {}) {
   const merged = { ...DEFAULT_CONFIG, ...config };
   merged.onr_signature_enabled = merged.onr_signature_enabled === true;
   merged.onr_api_key = String(merged.onr_api_key || "").trim();
+  merged.models_folder = String(merged.models_folder || "").trim();
+  merged.note_requirement_model = String(merged.note_requirement_model || "").trim();
+  merged.image_autuation_enabled = merged.image_autuation_enabled === true;
+  merged.image_output_folder = String(merged.image_output_folder || "").trim();
+  const bucketSize = Number(merged.image_output_bucket_size);
+  merged.image_output_bucket_size = Number.isSafeInteger(bucketSize) && bucketSize > 0 ? bucketSize : DEFAULT_CONFIG.image_output_bucket_size;
+  merged.image_output_folder_pattern = String(merged.image_output_folder_pattern || DEFAULT_CONFIG.image_output_folder_pattern).trim();
+  merged.image_output_format = ["tiff", "pdf"].includes(String(merged.image_output_format || "").toLowerCase())
+    ? String(merged.image_output_format).toLowerCase()
+    : DEFAULT_CONFIG.image_output_format;
+  merged.image_output_filename = String(merged.image_output_filename || DEFAULT_CONFIG.image_output_filename).trim();
   merged.movement_document_rules = normalizeMovementDocumentRules(merged);
   merged.movement_attachment_rules = normalizeMovementAttachmentRules(merged);
   merged.movement_prefill_options = normalizeMovementPrefillOptions(merged);
@@ -1401,6 +1418,18 @@ function movementAttachmentRequirements(odsPath, sheetName, sourceRowIndex, conf
         single_file: slot.single_file
       };
     });
+}
+
+function movementRequiresOnrSignature(odsPath, sheetName, sourceRowIndex, config = {}) {
+  const rows = readOdsSheet(odsPath, sheetName || config.movements_sheet);
+  const { entries } = movementRowsFromSheetRows(rows);
+  const entryIndex = entries.findIndex((entry) => entry.sourceRow === Number(sourceRowIndex));
+  if (entryIndex < 0) throw new Error("A movimentação selecionada não foi encontrada na guia.");
+  const entry = entries[entryIndex];
+  const documentName = getCell(entry.row, entry.layout.document)
+    || movementDocumentName(entry.movement, entries.slice(0, entryIndex).map((item) => item.movement), config);
+  const source = fixedDocumentSource(config, documentName, "", "");
+  return source.type === "model" && modelHasSignatureFields(source.path);
 }
 
 function analyzeMovements(odsPath, sheetName, config = {}) {
@@ -1791,6 +1820,27 @@ function mergeOdtDocument(templatePath, outputPath, fields) {
   }
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   zip.writeZip(outputPath);
+}
+
+function modelHasSignatureFields(modelPath) {
+  const zip = new AdmZip(modelPath);
+  const xml = zip.getEntries()
+    .filter((entry) => entry.entryName.endsWith(".xml"))
+    .map((entry) => entry.getData().toString("utf8"))
+    .join("\n");
+  const fields = new Set();
+  for (const match of xml.matchAll(/\{\{([^}]+)\}\}|\[\[([^\]]+)\]\]|<<([^>]+)>>|&lt;([^&<>]+)&gt;|<text:database-display\b([^>]*?)>/g)) {
+    const placeholder = match[1] || match[2] || match[3] || match[4];
+    const attributes = match[5] || "";
+    const field = placeholder || attributes.match(/(?:text:column-name|text:name)="([^"]+)"/)?.[1] || "";
+    if (field) fields.add(normalizeKey(field));
+  }
+  for (const match of xml.matchAll(/<(NOME(?:_ASSINA| ASSINA)|CARGO(?:_ASSINA| ASSINA))>/gi)) {
+    fields.add(normalizeKey(match[1]));
+  }
+  const hasName = ["NOME_ASSINA", "NOME ASSINA"].some((field) => fields.has(normalizeKey(field)));
+  const hasCargo = ["CARGO_ASSINA", "CARGO ASSINA"].some((field) => fields.has(normalizeKey(field)));
+  return hasName && hasCargo;
 }
 
 function findModelFile(modelsFolder, modelName) {
@@ -2547,6 +2597,140 @@ async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, ou
   return outputPath;
 }
 
+function imageFilenameFromPattern(pattern, officeProtocol, prenotation, bucketStart = "") {
+  const rawPrenotation = String(prenotation || "").trim();
+  const prenotationDigits = rawPrenotation.replace(/\D/g, "");
+  const bucketDigits = String(bucketStart || "").replace(/\D/g, "");
+  const office = String(officeProtocol || "").trim().toUpperCase().replace(/\s+/g, "");
+  const configuredPattern = String(pattern || "").trim();
+  if (!configuredPattern) throw new Error("Informe o padrão do caminho do IMAGE nas configurações.");
+
+  const formattedPattern = configuredPattern.replace(/\{([<>])([A-Za-z0-9])\^(\d{1,3})\}\.\{(PRENOT|FAIXA)\}/g, (_placeholder, side, character, widthText, variable) => {
+    const value = variable === "FAIXA" ? bucketDigits : prenotationDigits;
+    if (!value) throw new Error(`Não foi possível determinar ${variable === "FAIXA" ? "a faixa da prenotação" : "a prenotação"} para montar o caminho do IMAGE.`);
+    const width = Number(widthText);
+    if (width < 1 || width > 130) throw new Error("A largura do preenchimento do nome do arquivo deve estar entre 1 e 130.");
+    return side === "<"
+      ? value.padStart(width, character)
+      : value.padEnd(width, character);
+  });
+  const filename = formattedPattern.replace(/\{([^{}]+)\}/g, (_placeholder, token) => {
+    if (token === "IN") {
+      if (!office) throw new Error("O protocolo IN não está preenchido para montar o nome do arquivo do IMAGE.");
+      return office;
+    }
+    if (token === "PRENOT") {
+      if (!prenotationDigits) throw new Error("A prenotação não está preenchida para montar o nome do arquivo do IMAGE.");
+      return prenotationDigits;
+    }
+    if (token === "FAIXA") {
+      if (!bucketDigits) throw new Error("Não foi possível determinar a faixa da prenotação para montar o caminho do IMAGE.");
+      return bucketDigits;
+    }
+    throw new Error(`Variável inválida no padrão do nome do arquivo do IMAGE: {${token}}.`);
+  });
+  if (/[{}]/.test(filename)) throw new Error("O padrão do nome do arquivo contém chaves sem uma variável válida.");
+  const safeName = safeFilename(filename, "");
+  if (!safeName) throw new Error("O padrão do nome do arquivo do IMAGE não gerou um nome válido.");
+  return safeName;
+}
+
+function removePreviousImageExport(previousPath, outputDir, keepPaths = []) {
+  const previous = String(previousPath || "").trim();
+  if (!previous) return;
+  const resolvedPrevious = path.resolve(previous);
+  const resolvedOutputDir = path.resolve(outputDir);
+  const relativePath = path.relative(resolvedOutputDir, resolvedPrevious);
+  const extension = path.extname(resolvedPrevious).toLowerCase();
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath) || ![".tif", ".tiff", ".pdf"].includes(extension)) return;
+  if (keepPaths.some((keepPath) => path.resolve(keepPath) === resolvedPrevious)) return;
+  fs.rmSync(resolvedPrevious, { force: true });
+}
+
+async function exportAutuationImage(
+  autuacoesMovimentacoes,
+  protocolFolder,
+  outputDir,
+  format,
+  filenamePattern,
+  protocolContext = {},
+  previousOutputPath = "",
+  bucketSize = DEFAULT_CONFIG.image_output_bucket_size,
+  folderPattern = DEFAULT_CONFIG.image_output_folder_pattern
+) {
+  const normalizedFormat = String(format || "").toLowerCase();
+  if (!["tiff", "pdf"].includes(normalizedFormat)) {
+    throw new Error("Escolha TIFF ou PDF nas configurações de vínculo com o IMAGE.");
+  }
+  if (!String(outputDir || "").trim()) {
+    throw new Error("Escolha a pasta de saída do IMAGE nas configurações.");
+  }
+
+  const prenotationDigits = String(protocolContext.prenotation || "").replace(/\D/g, "");
+  const prenotationNumber = Number(prenotationDigits);
+  const normalizedBucketSize = Number(bucketSize);
+  if (!prenotationDigits || !Number.isSafeInteger(prenotationNumber)) {
+    throw new Error("Informe uma prenotação numérica válida para criar o caminho do IMAGE.");
+  }
+  if (!Number.isSafeInteger(normalizedBucketSize) || normalizedBucketSize < 1) {
+    throw new Error("O tamanho da faixa de prenotações deve ser um número inteiro positivo.");
+  }
+  const bucketStart = String(Math.floor(prenotationNumber / normalizedBucketSize) * normalizedBucketSize);
+  const officeProtocol = protocolContext.officeProtocol || protocolContext.office_protocol;
+  const folderName = imageFilenameFromPattern(folderPattern, officeProtocol, protocolContext.prenotation, bucketStart);
+  const fileBaseName = imageFilenameFromPattern(filenamePattern, officeProtocol, protocolContext.prenotation, bucketStart);
+  const destinationDir = path.join(outputDir, folderName);
+  const extension = normalizedFormat === "tiff" ? "TIF" : "pdf";
+  const alternateExtension = normalizedFormat === "tiff" ? "pdf" : "TIF";
+  const outputPath = path.join(destinationDir, `${fileBaseName}.${extension}`);
+  const alternateOutputPath = path.join(destinationDir, `${fileBaseName}.${alternateExtension}`);
+  const records = Object.values(autuacoesMovimentacoes || {}).filter((record) => record && Array.isArray(record.files));
+  if (!records.length) {
+    fs.rmSync(outputPath, { force: true });
+    fs.rmSync(alternateOutputPath, { force: true });
+    removePreviousImageExport(previousOutputPath, outputDir);
+    return { outputPath: "", removed: true };
+  }
+
+  fs.mkdirSync(destinationDir, { recursive: true });
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_image_export_"));
+  let stagedOutput = "";
+  try {
+    const mergedPdf = await createAutuationPreview(autuacoesMovimentacoes, protocolFolder, tempDir);
+    stagedOutput = path.join(destinationDir, `.execej-${crypto.randomUUID()}.${extension}`);
+    if (normalizedFormat === "pdf") {
+      fs.copyFileSync(mergedPdf, stagedOutput);
+    } else {
+      const ghostscript = findGhostscript();
+      if (!ghostscript) {
+        throw new Error("Ghostscript não encontrado. Instale o Ghostscript ou escolha PDF nas configurações.");
+      }
+      const result = childProcess.spawnSync(ghostscript, [
+        "-dSAFER",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dNOPROMPT",
+        "-sDEVICE=tiff24nc",
+        "-r300",
+        "-sCompression=lzw",
+        `-sOutputFile=${stagedOutput}`,
+        mergedPdf
+      ], { encoding: "utf8", timeout: 180000, windowsHide: true });
+      if (result.error) throw new Error(`Não foi possível iniciar o Ghostscript: ${result.error.message}`);
+      if (result.status !== 0 || !fs.existsSync(stagedOutput) || !fs.statSync(stagedOutput).size) {
+        throw new Error(`Ghostscript não conseguiu gerar o TIFF multipágina: ${ghostscriptMessage(result) || `status ${result.status ?? "sem código"}`}`);
+      }
+    }
+    fs.renameSync(stagedOutput, outputPath);
+    fs.rmSync(alternateOutputPath, { force: true });
+    removePreviousImageExport(previousOutputPath, outputDir, [outputPath]);
+    return { outputPath, removed: false };
+  } finally {
+    if (stagedOutput) fs.rmSync(stagedOutput, { force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function addNoteFields(fields, texts) {
   addField(fields, "MATRICULA", texts.matricula);
   addField(fields, "MATRÍCULA", texts.matricula);
@@ -2813,8 +2997,10 @@ async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, p
       copyFieldSet(fields, intimationByDate.get(key));
     }
     let convertedPdf;
+    let requiresSignature = false;
     try {
       if (source.type === "model") {
+        requiresSignature = modelHasSignatureFields(source.path);
         addMovementFields(fields, row, context, layout);
         addSignatureFields(fields, config, signatureData);
         const tempOdt = path.join(tempDir, `fixo_${String(movementIndex).padStart(3, "0")}_${safeFilename(documentName)}.odt`);
@@ -2830,7 +3016,7 @@ async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, p
     fs.copyFileSync(convertedPdf, outputPdf);
     const outputRowIndex = movementIndex;
     const outputOrder = fixedDocumentOutputOrder(movementName, documentName);
-    generated.push([outputRowIndex, outputOrder, outputPdf]);
+    generated.push([outputRowIndex, outputOrder, outputPdf, requiresSignature]);
   }
   return generated;
 }
@@ -3202,13 +3388,12 @@ async function autuarMovimentacao(config, data, onProgress) {
     });
     const generated = [...generatedFixed, ...generatedAttachments];
     if (!generated.length) throw new Error(`Nenhum documento foi gerado para a movimentação "${entry.movement}".`);
-    const fixedFileCount = generatedFixed.length;
     const persisted = [];
     try {
-      for (const [movementOrder, order, stagedFile] of generated) {
+      for (const [movementOrder, order, stagedFile, requiresSignature] of generated) {
         const file = uniquePath(path.join(pdfsDir, path.basename(stagedFile)));
         fs.copyFileSync(stagedFile, file);
-        persisted.push([movementOrder, order, file]);
+        persisted.push([movementOrder, order, file, requiresSignature]);
         fs.unlinkSync(stagedFile);
       }
     } catch (error) {
@@ -3217,9 +3402,9 @@ async function autuarMovimentacao(config, data, onProgress) {
     }
     return {
       files: persisted.map(([, , filePath]) => filePath),
-      signatureFiles: isAutuacaoDocument(documentName)
-        ? persisted.slice(0, fixedFileCount).map(([, , filePath]) => filePath)
-        : [],
+      signatureFiles: persisted
+        .filter(([, , , requiresSignature]) => requiresSignature)
+        .map(([, , filePath]) => filePath),
       parts: persisted.map(([, order, filePath]) => ({ file: filePath, order })),
       hasAttachments: attachmentSlots.length > 0,
       movement: entry.movement,
@@ -4038,8 +4223,10 @@ module.exports = {
   extractRecords,
   analyzeMovements,
   movementAttachmentRequirements,
+  movementRequiresOnrSignature,
   createInitialFolder,
   findModelFile,
+  modelHasSignatureFields,
   mergeOdtDocument,
   convertFileToPdf,
   convertSourceToPdf,
@@ -4047,6 +4234,8 @@ module.exports = {
   convertAnyFileToPdfA,
   mergePdfs,
   createAutuationPreview,
+  imageFilenameFromPattern,
+  exportAutuationImage,
   buildNoteRequirementTexts,
   noteTextsFromItems,
   generateNote,

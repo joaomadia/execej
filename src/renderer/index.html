@@ -49,6 +49,25 @@
           <label>Modelo padrão Nota de Exigência<input id="note_requirement_model" /></label>
           <button data-pick-file="note_requirement_model" data-ext="odt">Escolher</button>
         </div>
+        <label class="check image-autuation-setting">
+          <input id="image_autuation_enabled" type="checkbox" />
+          Vincular Autuação no IMAGE
+        </label>
+        <div id="imageExportSettings" hidden>
+          <div class="grid">
+            <label>Pasta raiz das imagens<input id="image_output_folder" /></label>
+            <button type="button" data-pick-folder="image_output_folder">Escolher</button>
+          </div>
+          <label class="image-bucket-size">Faixa de prenotações por pasta<input id="image_output_bucket_size" type="number" min="1" step="1" /></label>
+          <label>Padrão da subpasta<input id="image_output_folder_pattern" placeholder="{&lt;0^8}.{FAIXA}" /></label>
+          <label>Padrão do nome do arquivo<input id="image_output_filename" placeholder="{&lt;0^8}.{PRENOT}" /></label>
+          <p class="muted">No padrão da subpasta, {FAIXA} é o início da faixa da prenotação (por exemplo, 41000 para a prenotação 41156). Use {IN} para o protocolo e {PRENOT} para a prenotação. Os formatos {&lt;0^8}.{PRENOT}, {&lt;X^10}.{PRENOT} e {&gt;0^5}.{PRENOT} preenchem à esquerda ou à direita. A extensão .TIF ou .pdf é adicionada automaticamente.</p>
+          <fieldset class="image-format-options">
+            <legend>Formato do arquivo</legend>
+            <label><input type="radio" name="image_output_format" value="tiff" /> TIFF</label>
+            <label><input type="radio" name="image_output_format" value="pdf" /> PDF</label>
+          </fieldset>
+        </div>
         <div class="grid compact">
           <label>Guia das intimações<input id="notifications_sheet" /></label>
           <label>Coluna dos nomes<input id="notifications_name_col" /></label>
