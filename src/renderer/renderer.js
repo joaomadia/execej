@@ -757,11 +757,13 @@ function isCustasSheet(sheetName) {
 
 function sheetHeaderRowIndex(sheetName, rows) {
   if (protocolSheetKey(sheetName) === "MOVIMENTACOES") {
-    const index = rows.findIndex((row) => {
+    const completeHeaderIndex = rows.findIndex((row) => {
       const keys = row.map(normalizeUiKey);
       return keys.includes("MOVIMENTACAO") && (keys.includes("DATA") || keys.includes("NOME_ARQUIVO"));
     });
-    return index >= 0 ? index : 1;
+    if (completeHeaderIndex >= 0) return completeHeaderIndex;
+    const movementHeaderIndex = rows.findIndex((row) => row.some((cell) => normalizeUiKey(cell) === "MOVIMENTACAO"));
+    return movementHeaderIndex >= 0 ? movementHeaderIndex : 1;
   }
   return 0;
 }
@@ -1261,8 +1263,11 @@ function updateProtocolSheetSelection() {
   const rowButton = $("#deleteSheetRow");
   const columnButton = $("#deleteSheetColumn");
   const custas = isCustasSheet(selectedProtocolSheetName);
+  const movementSheet = protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES";
+  const addColumnButton = $("#addSheetColumn");
   if (rowButton) rowButton.disabled = selectedProtocolSheetRow < 0 || (custas && selectedProtocolSheetRow < 8);
-  if (columnButton) columnButton.disabled = selectedProtocolSheetColumn < 0 || custas;
+  if (columnButton) columnButton.disabled = selectedProtocolSheetColumn < 0 || custas || movementSheet;
+  if (addColumnButton) addColumnButton.disabled = custas || movementSheet;
 }
 
 function protocolSheetNames(protocol = selectedProtocol()) {
@@ -1988,8 +1993,14 @@ function renderProtocolSheetTable() {
   const headerRowIndex = sheetHeaderRowIndex(selectedProtocolSheetName, rows);
   const isMovementSheet = protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES";
   const movementColumnIndex = isMovementSheet
-    ? (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "MOVIMENTACAO")
+    ? Math.max(0, (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "MOVIMENTACAO"))
     : -1;
+  const movementDateColumnIndex = isMovementSheet
+    ? Math.max(movementColumnIndex + 1, (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "DATA"))
+    : -1;
+  const displayedColumns = isMovementSheet
+    ? [movementColumnIndex, movementDateColumnIndex]
+    : visibleColumns;
   table.classList.toggle("movement-sheet-table", isMovementSheet);
   const rowCount = Math.max(rows.length, headerRowIndex + 2);
   table.innerHTML = "";
@@ -1998,14 +2009,16 @@ function renderProtocolSheetTable() {
   const corner = document.createElement("th");
   corner.className = "row-head";
   headRow.appendChild(corner);
-  for (const colIndex of visibleColumns) {
+  for (const colIndex of displayedColumns) {
     const th = document.createElement("th");
-    const headerText = sheetColumnHeader(rows, headerRowIndex, colIndex);
+    const headerText = isMovementSheet
+      ? (colIndex === movementColumnIndex ? "Movimentação" : "Data")
+      : sheetColumnHeader(rows, headerRowIndex, colIndex);
     th.textContent = headerText;
     th.title = headerText || columnLabel(colIndex);
     th.dataset.colIndex = String(colIndex);
     if (isMovementSheet && colIndex === movementColumnIndex) th.classList.add("movement-name-column");
-    if (isMovementSheet && normalizeUiKey(headerText) === "DATA") th.classList.add("movement-date-column");
+    else if (isMovementSheet) th.classList.add("movement-date-column");
     th.addEventListener("click", () => setProtocolSheetSelection(-1, colIndex));
     headRow.appendChild(th);
   }
@@ -2030,16 +2043,14 @@ function renderProtocolSheetTable() {
     rowHead.addEventListener("click", () => setProtocolSheetSelection(rowIndex, -1));
     tr.appendChild(rowHead);
     let movementEditor = null;
-    for (const colIndex of visibleColumns) {
+    for (const colIndex of displayedColumns) {
       const td = document.createElement("td");
       td.dataset.rowIndex = String(rowIndex);
       td.dataset.colIndex = String(colIndex);
       const editor = createProtocolSheetCellEditor(selectedProtocolSheetName, rows, rowIndex, colIndex);
       if (isMovementSheet && colIndex === movementColumnIndex) movementEditor = editor;
       if (isMovementSheet && colIndex === movementColumnIndex) td.classList.add("movement-name-column");
-      if (isMovementSheet && normalizeUiKey(sheetColumnHeader(rows, headerRowIndex, colIndex)) === "DATA") {
-        td.classList.add("movement-date-column");
-      }
+      else if (isMovementSheet) td.classList.add("movement-date-column");
       if (isMovementSheet && protocol.autuacoesMovimentacoes?.[String(rowIndex)]) {
         editor.disabled = true;
         editor.title = "Estorne a autuação para editar esta movimentação.";
@@ -2177,6 +2188,7 @@ function addProtocolSheetColumn() {
   persistVisibleSheetToMemory();
   const protocol = selectedProtocol();
   if (!protocol || !selectedProtocolSheetName) return;
+  if (protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES") return;
   protocol.sheets ||= {};
   const rows = protocol.sheets[selectedProtocolSheetName] ||= [[""]];
   const colIndex = Math.max(effectiveSheetColumnCount(rows, 1), ...editableProtocolSheetColumns(selectedProtocolSheetName, rows).map((index) => index + 1));
@@ -2226,6 +2238,7 @@ function deleteProtocolSheetColumn() {
   persistVisibleSheetToMemory();
   const protocol = selectedProtocol();
   if (!protocol || !selectedProtocolSheetName || selectedProtocolSheetColumn < 0) return;
+  if (protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES") return;
   if (protocolSheetKey(selectedProtocolSheetName) === "MOVIMENTACOES" && Object.keys(protocol.autuacoesMovimentacoes || {}).length) {
     alert("Estorne as autuações da guia antes de apagar uma coluna.");
     return;

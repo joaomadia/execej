@@ -106,6 +106,56 @@ const DEFAULT_PROTOCOL_SHEET_NAMES = [
   "Tabela de Custas RTD"
 ];
 
+const PROTOCOL_SHEET_SCHEMAS = {
+  EXTRACAO_DE_ARQUIVOS: [
+    "ASSINOU DIGITALMENTE", "DOC_TIPO", "CPF ou CNPJ", "DATA EXTRAÇÃO", "PRENOTAÇÃO?",
+    "DATA EXTENSO", "PRENOTAÇÃO", "PREN_FORMATADA", "ID"
+  ],
+  NOTIFICACOES: [
+    "SEXO", "(AouO)", "Ao Senhor(a)", "Senhor(a)", "NOME", "CPF ou CNPJ", "AUXILIAR_DOC",
+    "ENDEREÇO", "AUX CEP", "CEP", "CEP_FORMATADO", "CIDADE", "ESTADO", "CREDORA",
+    "CONTRATO TIPO", "NÚMERO CONTRATO", "DATA CONTRATO", "ATO", "MATRÍCULA", "MAT_FORMATADA",
+    "DESCRIÇÃO MATRÍCULA", "INTERVALO ENCARGOS", "VALOR ENCARGOS", "VALOR_ENC_FORMATADO",
+    "VALOR INTIMAÇÕES", "PRENOTAÇÃO", "VALOR TOTAL", "VALOR_INT_FORMATADO", "PROTOCOLO", "PROT_FORMATADO"
+  ],
+  INTIMACAO: [
+    "SEXO", "TIPO NOTIFICAÇÃO", "dAs_notificações", "(os_as)", "(nºs_)", "(devedore_s)",
+    "AUXILIAR COMARCA RTD", "COMARCA RTD", "AUXILIAR Nº REGISTRO", "Nº REGISTRO",
+    "Nº REGISTRO FORMATADO", "AUXILIAR NOMES", "NOME", "RESULTADO", "DATA DA CERTIDÃO POSITIVA",
+    "DATA DA CERTIDÃO NEGATIVA", "DATA DA CERTIDÃO"
+  ],
+  TRANSCURSO_DE_PRAZO: [
+    "AUX_ASOS", "AUX_OOS", "AUX_DEVEDORES", "AUX_DAS", "NOMES", "CREDORA", "MATRÍCULA",
+    "MAT_FORMATADA", "TIPO DE INTIMAÇÃO", "Registros RTD", "Comarca de Registro RTD",
+    "Datas Editais", "TEXTO INTIMAÇÃO", "PRENOTAÇÃO", "PROT_FORMATADO", "DATA PRENOTAÇÃO",
+    "PROTOCOLO CERTIDÃO", "PROT_CERT_FORMATADO", "DATA JUNTADA"
+  ],
+  CONSOLIDACAO: ["Nº AVERBAÇÃO", "AVERBAÇÃO_FORMATADO", "MATRÍCULA", "MATRÍCULA_FORMATADA"],
+  TABELA_DE_CUSTAS_RTD: ["CIDADE", "FATOR", "ACEITA PROCURAÇÃO", "ADICIONA ANEXO?"]
+};
+
+const PROTOCOL_SHEET_HEADER_ALIASES = {
+  DOC_TIPO: ["TIPO DOCUMENTO"],
+  "CPF ou CNPJ": ["CPF CNPJ", "CPF/CNPJ"],
+  "DATA EXTRAÇÃO": ["DATA EXTRACAO"],
+  "PRENOTAÇÃO?": ["PRENOTACAO?"],
+  "DATA EXTENSO": ["DATA POR EXTENSO"],
+  "AUXILIAR_DOC": ["DOCUMENTO AUXILIAR", "AUXILIAR DOCUMENTO"],
+  "CEP_FORMATADO": ["CEP FORMATADO"],
+  "MATRÍCULA": ["MATRICULA"],
+  "MAT_FORMATADA": ["MATRICULA_FORMATADA", "MATRICULA FORMATADA"],
+  "Nº AVERBAÇÃO": ["N AVERBACAO", "NUMERO AVERBACAO", "AVERBACAO"],
+  "AVERBAÇÃO_FORMATADO": ["AVERBACAO_FORMATADO", "AVERBACAO FORMATADO"],
+  "MATRÍCULA_FORMATADA": ["MATRICULA_FORMATADA", "MATRICULA FORMATADA"],
+  "DATA DA CERTIDÃO": ["DATA CERTIDÃO", "DATA CERTIDAO"],
+  "DATA DA CERTIDÃO POSITIVA": ["DATA CERTIDÃO POSITIVA", "DATA CERTIDAO POSITIVA"],
+  "DATA DA CERTIDÃO NEGATIVA": ["DATA CERTIDÃO NEGATIVA", "DATA CERTIDAO NEGATIVA"],
+  CIDADE: ["CIDADE/ESTADO", "CIDADE ESTADO", "CIDADE/COMARCA", "COMARCA"],
+  FATOR: ["ALÍQUOTA", "ALIQUOTA", "FATOR RTD", "MULTIPLICADOR"],
+  "ACEITA PROCURAÇÃO": ["ACEITA PROCURAÇÃO?", "ACEITA PROCURACAO", "ACEITA PROCURACAO?"],
+  "ADICIONA ANEXO?": ["ADICIONA ANEXO", "ANEXO EXTRA"]
+};
+
 const MOVEMENT_DOCUMENT_RULES = [
   ["Prenotado", "Autuação"],
   ["Arquivos Compatíveis", "Certidão Extração de Arquivos"],
@@ -553,6 +603,130 @@ function movementLayout(rows) {
   return { headerIndex, firstDataIndex: headerIndex >= 0 ? headerIndex + 1 : 0, movement, date, day, month, year, document };
 }
 
+function movementSheetRowsWithSchema(rows) {
+  const cloned = cloneRows(rows);
+  if (!cloned.length) cloned.push([""]);
+  let headerIndex = cloned.findIndex((row) => row.some((cell) => normalizeKey(cell) === "MOVIMENTACAO"));
+  if (headerIndex < 0) {
+    headerIndex = 1;
+    cloned.splice(headerIndex, 0, []);
+  }
+  const sourceHeaders = cloned[headerIndex];
+  const find = (name, fallback) => {
+    const index = sourceHeaders.findIndex((cell) => normalizeKey(cell) === normalizeKey(name));
+    return index >= 0 ? index : fallback;
+  };
+  const movement = find("MOVIMENTACAO", 1);
+  const date = find("DATA", movement + 1);
+  const day = find("DIA", date + 1);
+  const month = find("MES", day + 1);
+  const year = find("ANO", month + 1);
+  const document = find("NOME ARQUIVO", year + 1);
+  const fields = [
+    { source: movement, target: 1, label: "MOVIMENTAÇÃO" },
+    { source: date, target: 2, label: "DATA" },
+    { source: day, target: 3, label: "DIA" },
+    { source: month, target: 4, label: "MÊS" },
+    { source: year, target: 5, label: "ANO" },
+    { source: document, target: 6, label: "NOME ARQUIVO" }
+  ];
+  const sourceFieldColumns = new Set(fields.map(({ source }) => source));
+  const sourceColumnCount = Math.max(...cloned.map((row) => row.length));
+  const extraColumns = Array.from({ length: sourceColumnCount }, (_, index) => ({
+    header: sourceHeaders[index] || `Campo extra ${index + 1}`,
+    index
+  })).filter(({ index }) => !sourceFieldColumns.has(index)
+    && cloned.some((row) => String(row[index] || "").trim()));
+  const headers = ["", ...fields.map(({ label }) => label), ...extraColumns.map(({ header }) => header)];
+  const normalizedRows = cloned.slice(0, headerIndex);
+  normalizedRows.push(headers);
+  for (const row of cloned.slice(headerIndex + 1)) {
+    const normalizedRow = Array.from({ length: headers.length }, () => "");
+    for (const { source, target } of fields) normalizedRow[target] = String(row[source] ?? "");
+    extraColumns.forEach(({ index }, extraIndex) => {
+      normalizedRow[7 + extraIndex] = String(row[index] ?? "");
+    });
+    normalizedRows.push(normalizedRow);
+  }
+  return normalizedRows;
+}
+
+function protocolSheetHeaderAliases(header) {
+  const key = normalizeKey(header);
+  const canonicalHeader = Object.keys(PROTOCOL_SHEET_HEADER_ALIASES)
+    .find((candidate) => normalizeKey(candidate) === key);
+  return canonicalHeader ? PROTOCOL_SHEET_HEADER_ALIASES[canonicalHeader] : [];
+}
+
+function protocolSheetSchemaKey(sheetName) {
+  const key = normalizeForMatch(sheetName);
+  return Object.keys(PROTOCOL_SHEET_SCHEMAS)
+    .find((candidate) => normalizeForMatch(candidate) === key);
+}
+
+function normalizeProtocolSheetRows(sheetName, sourceRows) {
+  const schemaKey = protocolSheetSchemaKey(sheetName);
+  if (!schemaKey) return cloneRows(sourceRows);
+  const canonicalHeaders = PROTOCOL_SHEET_SCHEMAS[schemaKey];
+  const rows = cloneRows(sourceRows);
+  const headerKeys = new Set();
+  for (const header of canonicalHeaders) {
+    headerKeys.add(normalizeKey(header));
+    for (const alias of protocolSheetHeaderAliases(header)) headerKeys.add(normalizeKey(alias));
+  }
+  let headerRowIndex = -1;
+  let bestHeaderScore = 0;
+  for (let rowIndex = 0; rowIndex < Math.min(rows.length, 8); rowIndex += 1) {
+    const score = rows[rowIndex].reduce((count, cell) => count + (headerKeys.has(normalizeKey(cell)) ? 1 : 0), 0);
+    if (score > bestHeaderScore) {
+      headerRowIndex = rowIndex;
+      bestHeaderScore = score;
+    }
+  }
+  const sourceHeaders = headerRowIndex >= 0 ? rows[headerRowIndex] : [];
+  const sourceIndexes = canonicalHeaders.map((header, targetIndex) => {
+    const aliases = new Set([normalizeKey(header), ...protocolSheetHeaderAliases(header).map(normalizeKey)]);
+    const matchedIndex = sourceHeaders.findIndex((sourceHeader) => aliases.has(normalizeKey(sourceHeader)));
+    if (matchedIndex >= 0) return matchedIndex;
+    if (headerRowIndex < 0) return targetIndex;
+    const columnIsMappedElsewhere = canonicalHeaders.some((otherHeader, otherIndex) => {
+      if (otherIndex === targetIndex) return false;
+      const otherAliases = new Set([normalizeKey(otherHeader), ...protocolSheetHeaderAliases(otherHeader).map(normalizeKey)]);
+      return sourceHeaders.some((sourceHeader, sourceIndex) => sourceIndex === targetIndex && otherAliases.has(normalizeKey(sourceHeader)));
+    });
+    return !columnIsMappedElsewhere && !String(sourceHeaders[targetIndex] || "").trim() ? targetIndex : -1;
+  });
+  const usedSourceIndexes = new Set(sourceIndexes.filter((index) => index >= 0));
+  const firstDataRow = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
+  const sourceColumnCount = Math.max(canonicalHeaders.length, ...rows.map((row) => row.length));
+  const extraIndexes = [];
+  for (let index = 0; index < sourceColumnCount; index += 1) {
+    if (usedSourceIndexes.has(index)) continue;
+    if (rows.slice(firstDataRow).some((row) => String(row[index] || "").trim())) extraIndexes.push(index);
+  }
+  const headers = [
+    ...canonicalHeaders,
+    ...extraIndexes.map((sourceIndex, extraIndex) => {
+      const sourceHeader = String(sourceHeaders[sourceIndex] || "").trim();
+      return /^(nova coluna|campo adicional)\s+\S+/i.test(sourceHeader)
+        ? sourceHeader
+        : `Campo adicional ${extraIndex + 1}`;
+    })
+  ];
+  const normalizedRows = [headers];
+  for (const row of rows.slice(firstDataRow)) {
+    const normalizedRow = Array.from({ length: headers.length }, () => "");
+    sourceIndexes.forEach((sourceIndex, targetIndex) => {
+      if (sourceIndex >= 0) normalizedRow[targetIndex] = String(row[sourceIndex] ?? "");
+    });
+    extraIndexes.forEach((sourceIndex, extraIndex) => {
+      normalizedRow[canonicalHeaders.length + extraIndex] = String(row[sourceIndex] ?? "");
+    });
+    normalizedRows.push(normalizedRow);
+  }
+  return compactRows(normalizedRows);
+}
+
 function movementRowsFromSheetRows(rows) {
   const layout = movementLayout(rows);
   const entries = [];
@@ -781,8 +955,8 @@ function tableRtdLookup(workbook) {
     : firstSheetByName(workbook, "Tabela de Custas RTD");
   const result = new Map();
   const headers = rows[0] || [];
-  const cityIndex = headerIndex(headers, ["CIDADE", "COMARCA"]);
-  const rateIndex = headerIndex(headers, ["FATOR", "FATOR RTD", "MULTIPLICADOR"]);
+  const cityIndex = headerIndex(headers, ["CIDADE", "COMARCA", "CIDADE/ESTADO", "CIDADE/COMARCA"]);
+  const rateIndex = headerIndex(headers, ["FATOR", "FATOR RTD", "MULTIPLICADOR", "ALÍQUOTA", "ALIQUOTA"]);
   const acceptsPowerIndex = headerIndex(headers, ["ACEITA PROCURAÇÃO", "ACEITA PROCURACAO"]);
   const addsAnnexIndex = headerIndex(headers, ["ADICIONA ANEXO?", "ADICIONA ANEXO", "ANEXO EXTRA"]);
   for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
@@ -855,8 +1029,8 @@ function rtdCostTableFromWorkbook(workbook) {
   const rows = firstSheetByName(workbook, "Tabela de Custas RTD");
   if (!rows.length) return [];
   const headers = rows[0] || [];
-  const cityIndex = headerIndex(headers, ["CIDADE", "COMARCA"]);
-  const rateIndex = headerIndex(headers, ["FATOR", "FATOR RTD", "MULTIPLICADOR"]);
+  const cityIndex = headerIndex(headers, ["CIDADE", "COMARCA", "CIDADE/ESTADO", "CIDADE/COMARCA"]);
+  const rateIndex = headerIndex(headers, ["FATOR", "FATOR RTD", "MULTIPLICADOR", "ALÍQUOTA", "ALIQUOTA"]);
   const acceptsPowerIndex = headerIndex(headers, ["ACEITA PROCURAÇÃO", "ACEITA PROCURACAO"]);
   const addsAnnexIndex = headerIndex(headers, ["ADICIONA ANEXO?", "ADICIONA ANEXO", "ANEXO EXTRA"]);
   const result = [];
@@ -1186,19 +1360,33 @@ function applyConsolidationSheetCalculations(rows) {
 
 function applyProtocolWorkbookCalculations(workbook, context = {}) {
   const normalized = normalizeWorkbookData(workbook);
+  for (const defaultSheetName of DEFAULT_PROTOCOL_SHEET_NAMES) {
+    const existingName = normalized.sheetOrder.find((name) => normalizeForMatch(name) === normalizeForMatch(defaultSheetName));
+    if (existingName) continue;
+    normalized.sheetOrder.push(defaultSheetName);
+    normalized.sheets[defaultSheetName] = [[]];
+  }
+  for (const sheetName of normalized.sheetOrder) {
+    const sourceRows = normalized.sheets[sheetName] || [[]];
+    if (normalizeForMatch(sheetName) === normalizeForMatch("Movimentações")) {
+      normalized.sheets[sheetName] = movementSheetRowsWithSchema(sourceRows);
+    } else if (normalizeForMatch(sheetName) !== normalizeForMatch("Custas Intimação")) {
+      normalized.sheets[sheetName] = normalizeProtocolSheetRows(sheetName, sourceRows);
+    }
+  }
   const sheets = {};
   const rtdCostTable = context.rtdCostTable || context.rtd_cost_table || workbook.rtd_cost_table || [];
   for (const sheetName of normalized.sheetOrder) {
-    const rows = normalized.sheets[sheetName] || [[]];
+    const sourceRows = normalized.sheets[sheetName] || [[]];
     const normalizedName = normalizeForMatch(sheetName);
     const workbookContext = { sheetOrder: [...normalized.sheetOrder], sheets: { ...normalized.sheets, ...sheets }, rtd_cost_table: rtdCostTable };
-    if (normalizedName === normalizeForMatch("Movimentações")) sheets[sheetName] = applyMovementSheetCalculations(rows, context);
-    else if (normalizedName === normalizeForMatch("Custas Intimação")) sheets[sheetName] = applyCustasSheetCalculations(rows, workbookContext);
-    else if (normalizedName === normalizeForMatch("Extração de Arquivos")) sheets[sheetName] = applyExtractionSheetCalculations(rows, context);
-    else if (normalizedName === normalizeForMatch("Notificações")) sheets[sheetName] = applyNotificationSheetCalculations(rows, context);
-    else if (normalizedName === normalizeForMatch("Intimação")) sheets[sheetName] = applyIntimationSheetCalculations(rows, workbookContext);
-    else if (normalizedName === normalizeForMatch("Consolidação")) sheets[sheetName] = applyConsolidationSheetCalculations(rows);
-    else sheets[sheetName] = cloneRows(rows);
+    if (normalizedName === normalizeForMatch("Movimentações")) sheets[sheetName] = applyMovementSheetCalculations(sourceRows, context);
+    else if (normalizedName === normalizeForMatch("Custas Intimação")) sheets[sheetName] = applyCustasSheetCalculations(sourceRows, workbookContext);
+    else if (normalizedName === normalizeForMatch("Extração de Arquivos")) sheets[sheetName] = applyExtractionSheetCalculations(sourceRows, context);
+    else if (normalizedName === normalizeForMatch("Notificações")) sheets[sheetName] = applyNotificationSheetCalculations(sourceRows, context);
+    else if (normalizedName === normalizeForMatch("Intimação")) sheets[sheetName] = applyIntimationSheetCalculations(sourceRows, workbookContext);
+    else if (normalizedName === normalizeForMatch("Consolidação")) sheets[sheetName] = applyConsolidationSheetCalculations(sourceRows);
+    else sheets[sheetName] = cloneRows(sourceRows);
   }
   const interim = { sheetOrder: [...normalized.sheetOrder], sheets };
   for (const sheetName of normalized.sheetOrder) {
@@ -1428,6 +1616,7 @@ function movementRequiresOnrSignature(odsPath, sheetName, sourceRowIndex, config
   const entry = entries[entryIndex];
   const documentName = getCell(entry.row, entry.layout.document)
     || movementDocumentName(entry.movement, entries.slice(0, entryIndex).map((item) => item.movement), config);
+  if (!documentName) return false;
   const source = fixedDocumentSource(config, documentName, "", "");
   return source.type === "model" && modelHasSignatureFields(source.path);
 }
@@ -3346,35 +3535,39 @@ async function autuarMovimentacao(config, data, onProgress) {
   }
   const documentName = getCell(entry.row, entry.layout.document)
     || movementDocumentName(entry.movement, previousMovements, config);
-  if (!documentName) throw new Error(`Não há documento configurado para a movimentação "${entry.movement}".`);
-  const autuationRow = [...entry.row];
-  ensureRowLength(autuationRow, entry.layout.document);
-  autuationRow[entry.layout.document] = documentName;
-  const fixedRow = [
-    entry.movementIndex,
-    autuationRow,
-    entry.layout,
-    entryIndex,
-    entries
-  ];
+  if (!documentName && !attachmentSlots.length) {
+    throw new Error(`Não há documento nem anexos configurados para a movimentação "${entry.movement}".`);
+  }
   const protocolContext = protocolContextFromValues(data, odsPath);
   const autuacaoDir = path.join(protocolFolder, "Autuação");
   const pdfsDir = path.join(autuacaoDir, "PDFs");
   fs.mkdirSync(pdfsDir, { recursive: true });
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_autuacao_"));
   try {
-    const generatedFixed = await generateFixedPdfs({
-      config,
-      odsPath,
-      slots: [],
-      fixedRows: [fixedRow],
-      context: protocolContext,
-      protocolFolder,
-      pdfsDir,
-      outputDir: tempDir,
-      tempDir,
-      onProgress
-    });
+    let generatedFixed = [];
+    if (documentName) {
+      const autuationRow = [...entry.row];
+      ensureRowLength(autuationRow, entry.layout.document);
+      autuationRow[entry.layout.document] = documentName;
+      generatedFixed = await generateFixedPdfs({
+        config,
+        odsPath,
+        slots: [],
+        fixedRows: [[
+          entry.movementIndex,
+          autuationRow,
+          entry.layout,
+          entryIndex,
+          entries
+        ]],
+        context: protocolContext,
+        protocolFolder,
+        pdfsDir,
+        outputDir: tempDir,
+        tempDir,
+        onProgress
+      });
+    }
     const generatedAttachments = await copyAttachmentPdfs({
       slots: attachmentSlots.map((slot) => ({
         ...slot,

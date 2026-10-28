@@ -353,8 +353,8 @@ main {
 
 .sheet-table.movement-sheet-table {
   width: max-content;
-  min-width: 100%;
-  table-layout: auto;
+  min-width: 0;
+  table-layout: fixed;
 }
 
 .movement-sheet-table th[data-col-index],
@@ -362,14 +362,27 @@ main {
   min-width: 0;
 }
 
-.movement-sheet-table th.movement-name-column,
-.movement-sheet-table td.movement-name-column {
-  width: auto;
+.sheet-table.movement-sheet-table th.movement-data-column,
+.sheet-table.movement-sheet-table td.movement-data-column {
+  width: 150px;
+  min-width: 150px;
+}
+
+.sheet-table.movement-sheet-table td.movement-data-column input,
+.sheet-table.movement-sheet-table td.movement-data-column select {
+  width: 100%;
   min-width: 0;
 }
 
-.movement-sheet-table td.movement-name-column input,
-.movement-sheet-table td.movement-name-column select {
+.sheet-table.movement-sheet-table th.movement-name-column,
+.sheet-table.movement-sheet-table td.movement-name-column {
+  width: 240px;
+  min-width: 240px;
+  max-width: 240px;
+}
+
+.sheet-table.movement-sheet-table td.movement-name-column input,
+.sheet-table.movement-sheet-table td.movement-name-column select {
   width: 100%;
   min-width: 0;
 }
