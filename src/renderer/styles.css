@@ -104,8 +104,19 @@ main {
 }
 #protocolsTable th:last-child,
 #protocolsTable td:last-child {
-  width: 130px;
+  width: 140px;
   text-align: right;
+}
+.protocol-closed-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #fff;
+  background: #c62828;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 .protocol-detail-header {
   display: flex;
@@ -649,10 +660,11 @@ th { background: #f3f6fa; }
 .document-rules-table th:nth-child(1) { width: 44%; }
 .document-rules-table th:nth-child(2) { width: 44%; }
 .document-rules-table th:nth-child(3) { width: 120px; }
-.movement-rules-table th:nth-child(1) { width: 34%; }
-.movement-rules-table th:nth-child(2) { width: 34%; }
-.movement-rules-table th:nth-child(3) { width: 220px; }
-.movement-rules-table th:nth-child(4) { width: 120px; }
+.movement-rules-table th:nth-child(1) { width: 27%; }
+.movement-rules-table th:nth-child(2) { width: 27%; }
+.movement-rules-table th:nth-child(3) { width: 190px; }
+.movement-rules-table th:nth-child(4) { width: 190px; }
+.movement-rules-table th:nth-child(5) { width: 100px; }
 .movement-list-table th:nth-child(1) { width: auto; }
 .movement-list-table th:nth-child(2) { width: 120px; }
 .rules-table input, .rules-table select {
@@ -1749,6 +1761,34 @@ footer {
   border: 1px solid var(--color-border);
   border-radius: 9px;
   background: #f8fafc;
+}
+
+.movement-input-section {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.movement-input-label {
+  display: grid;
+  gap: 7px;
+  color: #273d52;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.movement-input-label input,
+.movement-input-label textarea {
+  width: 100%;
+  padding: 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-weight: 400;
 }
 
 .movement-attachment-group-heading {

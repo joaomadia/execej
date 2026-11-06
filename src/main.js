@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const core = require("./core");
 const onrApi = require("./core/onr-api");
 const webPkiNative = require("./core/webpki-native");
+const { createProtocolShareStore, protocolIdentityKey } = require("./core/protocolShareStore");
 
 const APP_VERSION = app.getVersion();
 autoUpdater.logger = log;
@@ -16,6 +17,7 @@ autoUpdater.autoDownload = false;
 let mainWindow;
 const autuationPreviewDirs = new Map();
 let cachedWebPkiLicense = "";
+let protocolShareStore;
 
 function removeAutuationPreview(id) {
   const dir = autuationPreviewDirs.get(id);
@@ -211,6 +213,7 @@ async function signOnrPdfFiles(filePaths, certificateThumbprint, sender) {
 
 const CONFIG_FILE = "config_execej.json";
 const PROTOCOLS_FILE = "protocolos_execej.json";
+const PROTOCOL_SHARE_SETTINGS_FILE = "protocolos_compartilhados_execej.json";
 const STORAGE_MIGRATION_MARKER = "storage_migration_execej_v1.json";
 const LEGACY_CONFIG_FILES = ["config_notif9514.json"];
 const LEGACY_PROTOCOLS_FILES = ["protocolos_notif9514.json"];
@@ -222,6 +225,45 @@ function configPath() {
 
 function protocolsPath() {
   return path.join(app.getPath("userData"), PROTOCOLS_FILE);
+}
+
+function protocolShareSettingsPath() {
+  return path.join(app.getPath("userData"), PROTOCOL_SHARE_SETTINGS_FILE);
+}
+
+function configuredProtocolShareRoot() {
+  let settings;
+  try {
+    settings = JSON.parse(fs.readFileSync(protocolShareSettingsPath(), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return "";
+    throw new Error(`Não foi possível ler a configuração da pasta pública: ${error.message}`);
+  }
+  const root = String(settings?.root || "").trim();
+  return root ? path.resolve(root) : "";
+}
+
+function getProtocolShareStore() {
+  if (protocolShareStore) return protocolShareStore;
+  const root = configuredProtocolShareRoot();
+  if (!root) return null;
+  protocolShareStore = createProtocolShareStore(root);
+  return protocolShareStore;
+}
+
+function configureProtocolShare(root) {
+  const resolvedRoot = path.resolve(root);
+  const nextStore = createProtocolShareStore(resolvedRoot);
+  nextStore.initialize();
+
+  fs.mkdirSync(path.dirname(protocolShareSettingsPath()), { recursive: true });
+  fs.writeFileSync(
+    protocolShareSettingsPath(),
+    `${JSON.stringify({ root: resolvedRoot }, null, 2)}\n`,
+    "utf8"
+  );
+  protocolShareStore = nextStore;
+  return { configured: true, root: resolvedRoot };
 }
 
 function migrationMarkerPath() {
@@ -425,6 +467,25 @@ function hydrateRtdCostTable(config) {
   return config;
 }
 
+function protocolPdfsDirectory(folderPath, odsPath) {
+  const candidates = [...new Set([folderPath, odsPath ? path.dirname(odsPath) : ""].filter(Boolean).map((item) => path.resolve(item)))];
+  for (const candidate of [...candidates]) {
+    let parent = candidate;
+    for (let depth = 0; depth < 3; depth += 1) {
+      parent = path.dirname(parent);
+      if (parent === path.dirname(parent)) break;
+      candidates.push(parent);
+    }
+  }
+  for (const folder of [...new Set(candidates)]) {
+    for (const name of ["Autuação", "Autuacao"]) {
+      const directory = path.join(folder, name, "PDFs");
+      if (fs.existsSync(directory) && fs.statSync(directory).isDirectory()) return directory;
+    }
+  }
+  return "";
+}
+
 function workbookForProtocol(protocol = {}) {
   if (protocol.sheets && typeof protocol.sheets === "object") {
     return core.normalizeWorkbookData({ sheetOrder: protocol.sheetOrder, sheets: protocol.sheets });
@@ -464,7 +525,9 @@ function normalizeProtocol(protocol = {}, touch = true) {
         parts: Array.isArray(record.parts)
           ? record.parts.map((part) => ({
             file: String(part.file || "").trim(),
-            order: Number(part.order) || 0
+            order: Number(part.order) || 0,
+            fixedPosition: String(part.fixedPosition || ""),
+            kind: String(part.kind || "")
           })).filter((part) => part.file)
           : [],
         hasAttachments: Boolean(record.hasAttachments),
@@ -483,11 +546,32 @@ function normalizeProtocol(protocol = {}, touch = true) {
   });
   normalized.sheetOrder = workbook.sheetOrder;
   normalized.sheets = workbook.sheets;
+  const movementSheetName = workbook.sheetOrder.find((name) => core.normalizeKey(name) === "MOVIMENTACOES");
+  if (movementSheetName && folderPath) {
+    const pdfsDirectory = protocolPdfsDirectory(folderPath, odsPath);
+    if (pdfsDirectory) {
+      const pdfPaths = fs.readdirSync(pdfsDirectory)
+        .filter((name) => path.extname(name).toLowerCase() === ".pdf")
+        .map((name) => path.join(pdfsDirectory, name));
+      workbook.sheets[movementSheetName] = core.recoverMovementsFromPdfs(
+        workbook.sheets[movementSheetName],
+        pdfPaths,
+        config
+      );
+      const recovered = core.recoverAutuationsFromPdfs(workbook.sheets[movementSheetName], pdfPaths, config);
+      normalized.autuacoesMovimentacoes = core.mergeRecoveredAutuations(
+        workbook.sheets[movementSheetName],
+        normalized.autuacoesMovimentacoes,
+        recovered
+      );
+    }
+  }
   normalized.label = protocolLabel(normalized);
+  normalized.closed = core.protocolIsClosed(normalized);
   return normalized;
 }
 
-function loadProtocols() {
+function loadLocalProtocols() {
   migrateLegacyStorage();
   try {
     const data = JSON.parse(fs.readFileSync(protocolsPath(), "utf8"));
@@ -498,25 +582,80 @@ function loadProtocols() {
   }
 }
 
-function saveProtocols(protocols) {
-  fs.mkdirSync(path.dirname(protocolsPath()), { recursive: true });
-  fs.writeFileSync(protocolsPath(), JSON.stringify(protocols.map((protocol) => normalizeProtocol(protocol, false)), null, 2), "utf8");
-  return loadProtocols();
+function loadProtocols() {
+  const localProtocols = loadLocalProtocols();
+  const store = getProtocolShareStore();
+  if (!store) return localProtocols;
+  const byIdentity = new Map();
+  for (const protocol of localProtocols) {
+    const key = protocolIdentityKey(protocol) || `id:${protocol.id}`;
+    if (!byIdentity.has(key)) byIdentity.set(key, protocol);
+  }
+  const sharedProtocols = store.listProtocols()
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  for (const protocol of sharedProtocols) {
+    const normalized = normalizeProtocol(protocol, false);
+    const key = protocolIdentityKey(normalized) || `id:${normalized.id}`;
+    byIdentity.set(key, normalized);
+  }
+  return [...byIdentity.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 function saveProtocol(protocol) {
-  const protocols = loadProtocols();
   const normalized = normalizeProtocol(protocol);
+  const shareStore = getProtocolShareStore();
+  if (shareStore?.hasProtocol(normalized.id)) {
+    return normalizeProtocol(shareStore.saveProtocol(normalized), false);
+  }
+  const protocols = loadLocalProtocols();
   const index = protocols.findIndex((item) => item.id === normalized.id);
   if (index >= 0) protocols[index] = { ...protocols[index], ...normalized, createdAt: protocols[index].createdAt || normalized.createdAt };
   else protocols.push(normalized);
-  saveProtocols(protocols);
-  return loadProtocols().find((item) => item.id === normalized.id) || normalized;
+  fs.mkdirSync(path.dirname(protocolsPath()), { recursive: true });
+  fs.writeFileSync(protocolsPath(), JSON.stringify(protocols.map((item) => normalizeProtocol(item, false)), null, 2), "utf8");
+  return loadLocalProtocols().find((item) => item.id === normalized.id) || normalized;
 }
 
-function deleteProtocol(id) {
-  saveProtocols(loadProtocols().filter((protocol) => protocol.id !== id));
-  return loadProtocols();
+function importProtocol(protocol) {
+  const store = getProtocolShareStore();
+  if (!store) throw new Error("Conecte a pasta pública antes de importar protocolos.");
+  const normalized = normalizeProtocol(protocol);
+  const identity = protocolIdentityKey(normalized);
+  const existingLocal = loadLocalProtocols().find((item) => protocolIdentityKey(item) === identity);
+  const protocolToShare = existingLocal
+    ? {
+      ...existingLocal,
+      ...normalized,
+      id: existingLocal.id,
+      name: existingLocal.name || normalized.name,
+      createdAt: existingLocal.createdAt,
+      imageExportPath: existingLocal.imageExportPath || normalized.imageExportPath,
+      autuacoesMovimentacoes: normalized.sheets?.[normalized.sheetOrder.find((name) => core.normalizeKey(name) === "MOVIMENTACOES")]
+        ? core.mergeRecoveredAutuations(
+          normalized.sheets[normalized.sheetOrder.find((name) => core.normalizeKey(name) === "MOVIMENTACOES")],
+          existingLocal.autuacoesMovimentacoes,
+          normalized.autuacoesMovimentacoes
+        )
+        : { ...existingLocal.autuacoesMovimentacoes, ...normalized.autuacoesMovimentacoes }
+    }
+    : normalized;
+  const result = store.importProtocol(protocolToShare);
+  return {
+    ...result,
+    duplicate: !result.created,
+    migrated: Boolean(existingLocal && result.created),
+    synchronized: Boolean(result.updated),
+    protocol: normalizeProtocol(result.protocol, false)
+  };
+}
+
+async function chooseProtocolShareRoot() {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Escolha a pasta compartilhada de rede para os protocolos",
+    properties: ["openDirectory", "createDirectory"]
+  });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  return configureProtocolShare(result.filePaths[0]);
 }
 
 function findProtocol(id) {
@@ -774,7 +913,12 @@ ipcMain.handle("config:load", () => loadConfig());
 ipcMain.handle("config:save", (_event, config) => saveConfig(config));
 ipcMain.handle("protocols:list", () => loadProtocols());
 ipcMain.handle("protocols:save", (_event, protocol) => saveProtocol(protocol));
-ipcMain.handle("protocols:delete", (_event, id) => deleteProtocol(id));
+ipcMain.handle("protocols:import", (_event, protocol) => importProtocol(protocol));
+ipcMain.handle("protocols:shareStatus", () => {
+  const root = configuredProtocolShareRoot();
+  return { configured: Boolean(root), root };
+});
+ipcMain.handle("protocols:connectShare", () => chooseProtocolShareRoot());
 ipcMain.handle("protocols:inspectOds", (_event, odsPath) => normalizeProtocol({ odsPath }));
 ipcMain.handle("protocols:listFiles", (_event, folderPath) => listFolderEntries(String(folderPath || "").trim()));
 ipcMain.handle("onr:certificates:list", async () => {
@@ -807,7 +951,8 @@ ipcMain.handle("movements:attachmentRequirements", (_event, payload) => withProt
   const config = loadConfig();
   return {
     requirements: core.movementAttachmentRequirements(odsPath, payload.sheetName, payload.sourceRowIndex, config),
-    requiresSignature: core.movementRequiresOnrSignature(odsPath, payload.sheetName, payload.sourceRowIndex, config)
+    requiresSignature: core.movementRequiresOnrSignature(odsPath, payload.sheetName, payload.sourceRowIndex, config),
+    input: core.movementInputRequirementForRow(odsPath, payload.sheetName, payload.sourceRowIndex, config)
   };
 }));
 ipcMain.handle("movements:autuationPreview", async (_event, protocolId) => {
@@ -816,10 +961,13 @@ ipcMain.handle("movements:autuationPreview", async (_event, protocolId) => {
   const id = crypto.randomUUID();
   const tempDir = fs.mkdtempSync(path.join(app.getPath("temp"), "execej_autuacao_preview_"));
   try {
+    const protocolContext = core.protocolContextFromValues(protocol, protocol.odsPath);
+    const previewFilename = `${protocolContext.office_protocol} - ${protocolContext.prenotation.replace(/\D/g, "")}.pdf`;
     const filePath = await core.createAutuationPreview(
       protocol.autuacoesMovimentacoes,
       protocol.folderPath,
-      tempDir
+      tempDir,
+      previewFilename
     );
     autuationPreviewDirs.set(id, tempDir);
     return { id, filePath };

@@ -99,13 +99,14 @@
       </div>
       <div id="configRules" class="config-panel" hidden>
         <div class="section-title">Movimentações pré-preenchidas</div>
-        <p class="muted">Use uma linha com Anexo desligado para gerar arquivo/modelo. Use uma linha com Anexo ligado para abrir coluna de anexos. A mesma movimentação pode aparecer mais de uma vez.</p>
+        <p class="muted">Use uma linha com Anexo desligado para gerar certidão/modelo e uma linha com Anexo ligado para solicitar arquivos. Selecione dados adicionais para abrir campos no momento da autuação; Saldo a devolver substitui a solicitação de anexo. A mesma movimentação pode aparecer mais de uma vez.</p>
         <table id="movementRulesTable" class="rules-table movement-rules-table">
           <thead>
             <tr>
               <th>Movimentação</th>
               <th>Arquivo</th>
               <th>Anexo</th>
+              <th>Dados adicionais</th>
               <th></th>
             </tr>
           </thead>
@@ -160,16 +161,18 @@
           <div class="page-heading">
             <div class="eyebrow">FLUXO DE TRABALHO</div>
             <h2>Protocolos</h2>
-            <p>Abra um protocolo para acessar seus dados, documentos e ferramentas de finalização.</p>
+            <p>Conecte a pasta de rede para abrir e salvar os protocolos compartilhados. Os protocolos locais continuam disponíveis no computador e não são copiados ao abrir.</p>
           </div>
           <div class="actions compact-actions">
             <button id="newDraftProtocol" type="button">Novo rascunho</button>
             <button id="importProtocolOds" type="button">Importar ODS</button>
+            <button id="connectProtocolShare" type="button">Conectar pasta pública</button>
           </div>
+          <p id="protocolShareStatus" class="muted" aria-live="polite"></p>
           <label>Filtrar<input id="protocolSearch" /></label>
           <table id="protocolsTable">
             <thead>
-              <tr><th>Protocolo</th><th>Status</th><th></th></tr>
+              <tr><th>Protocolo</th><th>Status</th><th>Situação</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -243,7 +246,6 @@
                 </div>
                 <div class="actions">
                   <button id="saveProtocol" type="button" hidden>Salvar protocolo</button>
-                  <button id="unlinkProtocol" type="button">Desvincular</button>
                 </div>
               </section>
               <section id="protocolSheets" class="protocol-panel">
@@ -419,8 +421,8 @@
   <dialog id="movementAttachmentsDialog" class="movement-attachments-dialog">
     <div class="movement-attachments-dialog-header">
       <div>
-        <h2>Anexos</h2>
-        <p>Selecione os arquivos e ajuste a ordem em que serão juntados à movimentação.</p>
+        <h2>Anexos e dados da movimentação</h2>
+        <p>Preencha os campos solicitados e selecione os arquivos que serão juntados à movimentação.</p>
       </div>
       <button id="cancelMovementAttachments" class="icon-button" type="button" aria-label="Fechar">×</button>
     </div>

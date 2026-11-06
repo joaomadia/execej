@@ -56,7 +56,102 @@ test("autuates attachment-only movements without requiring a fixed document", as
     assert.equal(result.hasAttachments, true);
     assert.equal(result.files.length, 1);
     assert.equal(path.dirname(result.files[0]), path.join(protocolFolder, "Autuação", "PDFs"));
+    assert.match(path.basename(result.files[0]), /^Exigencia - Documento da exigencia - 28\.10\.2026 - /);
     assert.ok(fs.existsSync(result.files[0]));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("names the partial autuation preview from the office protocol and prenotation", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-autuation-preview-name-"));
+  try {
+    const protocolFolder = path.join(tempDir, "protocol");
+    const pdfsDir = path.join(protocolFolder, "Autuação", "PDFs");
+    const outputDir = path.join(tempDir, "preview");
+    const pdfPath = path.join(pdfsDir, "movement.pdf");
+    fs.mkdirSync(pdfsDir, { recursive: true });
+    await createPdf(pdfPath);
+
+    const output = await core.createAutuationPreview({
+      "2": { files: [pdfPath], parts: [{ file: pdfPath, order: 0 }] }
+    }, protocolFolder, outputDir, "IN12345678 - 40000.pdf");
+
+    assert.equal(path.basename(output), "IN12345678 - 40000.pdf");
+    assert.ok(fs.existsSync(output));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("requires the talão at final archiving autuation and reuses it as the final PDF bookend", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-archive-talao-"));
+  try {
+    const protocolFolder = path.join(tempDir, "protocol");
+    const modelsFolder = path.join(tempDir, "models");
+    const pdfsDir = path.join(protocolFolder, "Autuação", "PDFs");
+    const odsPath = path.join(tempDir, "protocol.ods");
+    const talaoPath = path.join(tempDir, "Certidão Talão.pdf");
+    const modelPath = path.join(modelsFolder, "Certidão Arquivamento por Consolidação.pdf");
+    fs.mkdirSync(pdfsDir, { recursive: true });
+    fs.mkdirSync(modelsFolder);
+    await createPdf(talaoPath);
+    await createPdf(modelPath);
+    core.writeWorkbookOds(odsPath, {
+      sheetOrder: ["Movimentações"],
+      sheets: {
+        "Movimentações": [
+          ["", "PROTOCOLO:", "", "", "", "", ""],
+          ["", "MOVIMENTAÇÃO", "DATA", "DIA", "MÊS", "ANO", "NOME ARQUIVO"],
+          ["", "Prenotado", "27/10/2026", "27", "outubro", "2026", "Autuação"],
+          ["", "Arquivamento", "28/10/2026", "28", "outubro", "2026", "Certidão Arquivamento por Consolidação"]
+        ]
+      }
+    });
+    const config = {
+      models_folder: modelsFolder,
+      movement_document_rules: [],
+      movement_attachment_rules: []
+    };
+    const requirements = core.movementAttachmentRequirements(odsPath, "Movimentações", 3, config);
+    assert.equal(requirements.length, 1);
+    assert.equal(requirements[0].title, "Certidão Talão");
+    assert.equal(requirements[0].fixed_position, "bookend");
+    assert.equal(requirements[0].single_file, true);
+
+    const archived = await core.autuarMovimentacao(config, {
+      odsPath,
+      sheetName: "Movimentações",
+      sourceRowIndex: 3,
+      protocolFolder,
+      officeProtocol: "IN12345678",
+      prenotation: "12345",
+      attachments: [{ title: "Certidão Talão", files: [talaoPath] }]
+    });
+    const talaoPart = archived.parts.find((part) => part.fixedPosition === "bookend");
+    assert.ok(talaoPart);
+    assert.equal(archived.files.length, 2);
+
+    const prenotacaoPath = path.join(pdfsDir, "Prenotado.pdf");
+    await createPdf(prenotacaoPath);
+    const result = await core.generateFinalPdf(config, {
+      odsPath,
+      sheetName: "Movimentações",
+      protocolFolder,
+      officeProtocol: "IN12345678",
+      prenotation: "12345",
+      slots: [{ ...requirements[0], files: [] }],
+      autuacoesMovimentacoes: {
+        "2": {
+          files: [prenotacaoPath],
+          parts: [{ file: prenotacaoPath, order: 0 }],
+          hasAttachments: false
+        },
+        "3": archived
+      }
+    });
+    const finalPdf = await PDFDocument.load(fs.readFileSync(result.output));
+    assert.equal(finalPdf.getPageCount(), 4);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

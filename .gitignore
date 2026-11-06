@@ -13,3 +13,9 @@
 Thumbs.db
 .DS_Store
 !/package.json
+node_modules/
+coverage/
+*.log
+.env
+.env.*
+!.env.example

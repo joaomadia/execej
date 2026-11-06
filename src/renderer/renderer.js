@@ -60,7 +60,13 @@ const defaultMovementAttachmentRules = [
   { movement: "Requerimento Consolidação", document: "Comprovante de Pagamento", quantity: "1" },
   { movement: "Valor Venal", document: "Valor Venal", quantity: "1" },
   { movement: "Consolidação", document: "Certidão Matrícula", quantity: "1" },
-  { movement: "Desistência", document: "Requerimento Desistência", quantity: "1+" }
+  { movement: "Desistência", document: "Requerimento Desistência", quantity: "1+" },
+  { movement: "Juntada de Documentos", document: "Documento a ser juntado", quantity: "1+" }
+];
+
+const defaultMovementInputRules = [
+  { movement: "Saldo a Devolver", type: "balance" },
+  { movement: "Juntada de Documentos", type: "documents" }
 ];
 
 const defaultMovementDocumentRules = [
@@ -151,7 +157,9 @@ const movementValidationOptions = [
   "Consolidação",
   "Decurso de Prazo da Prenotação",
   "Arquivamento",
-  "Desistência"
+  "Desistência",
+  "Saldo a Devolver",
+  "Juntada de Documentos"
 ];
 const yesNoOptions = ["SIM", "NÃO"];
 const noYesOptions = ["NÃO", "SIM"];
@@ -217,6 +225,16 @@ function cloneDefaultMovementDocumentRules() {
   return defaultMovementDocumentRules.map((rule) => ({ ...rule }));
 }
 
+function movementInputRulesFromConfig(rules) {
+  const source = Array.isArray(rules) ? rules : defaultMovementInputRules;
+  return source
+    .map((rule) => ({
+      movement: String(rule?.movement || "").trim(),
+      type: String(rule?.type || "").trim()
+    }))
+    .filter((rule) => rule.movement && ["balance", "documents"].includes(rule.type));
+}
+
 function movementDocumentRulesFromConfig(rules) {
   const source = Array.isArray(rules) ? rules : cloneDefaultMovementDocumentRules();
   return source
@@ -251,13 +269,19 @@ function movementRowsFromConfig(source = config) {
   for (const rule of movementRulesFromConfig(source?.movement_attachment_rules)) {
     rows.push({ movement: rule.movement, file: rule.document, isAttachment: true, quantity: rule.quantity });
   }
+  for (const rule of movementInputRulesFromConfig(source?.movement_input_rules)) {
+    const existing = rows.find((row) => normalizeUiKey(row.movement) === normalizeUiKey(rule.movement));
+    if (existing) existing.inputType = rule.type;
+    else rows.push({ movement: rule.movement, file: "", isAttachment: false, quantity: "1+", inputType: rule.type });
+  }
   return rows;
 }
 
 function cloneDefaultMovementRows() {
   return movementRowsFromConfig({
     movement_document_rules: cloneDefaultMovementDocumentRules(),
-    movement_attachment_rules: cloneDefaultMovementRules()
+    movement_attachment_rules: cloneDefaultMovementRules(),
+    movement_input_rules: defaultMovementInputRules.map((rule) => ({ ...rule }))
   });
 }
 
@@ -301,6 +325,7 @@ function addMovementRuleRow(rule = {}) {
   const movementCell = document.createElement("td");
   const fileCell = document.createElement("td");
   const attachmentCell = document.createElement("td");
+  const inputCell = document.createElement("td");
   const actionCell = document.createElement("td");
   const movementInput = document.createElement("input");
   const fileInput = document.createElement("input");
@@ -308,6 +333,7 @@ function addMovementRuleRow(rule = {}) {
   const attachmentCheckbox = document.createElement("input");
   const quantityWrap = document.createElement("span");
   const quantitySelect = document.createElement("select");
+  const inputSelect = document.createElement("select");
   const removeButton = document.createElement("button");
 
   movementInput.value = rule.movement || "";
@@ -321,6 +347,11 @@ function addMovementRuleRow(rule = {}) {
   quantitySelect.add(new Option("1+", "1+"));
   quantitySelect.value = rule.quantity === "1" ? "1" : "1+";
   quantitySelect.dataset.field = "quantity";
+  inputSelect.add(new Option("Nenhum", ""));
+  inputSelect.add(new Option("Saldo a devolver", "balance"));
+  inputSelect.add(new Option("Documentos juntados", "documents"));
+  inputSelect.value = ["balance", "documents"].includes(rule.inputType) ? rule.inputType : "";
+  inputSelect.dataset.field = "inputType";
   quantityWrap.className = "movement-quantity";
   quantityWrap.append("Quantidade: ", quantitySelect);
   attachmentLabel.className = "check movement-attachment-check";
@@ -337,8 +368,9 @@ function addMovementRuleRow(rule = {}) {
   movementCell.appendChild(movementInput);
   fileCell.appendChild(fileInput);
   attachmentCell.append(attachmentLabel, quantityWrap);
+  inputCell.appendChild(inputSelect);
   actionCell.appendChild(removeButton);
-  row.append(movementCell, fileCell, attachmentCell, actionCell);
+  row.append(movementCell, fileCell, attachmentCell, inputCell, actionCell);
   body.appendChild(row);
 }
 
@@ -356,7 +388,8 @@ function readMovementRows() {
       movement: row.querySelector('[data-field="movement"]')?.value.trim() || "",
       file: row.querySelector('[data-field="file"]')?.value.trim() || "",
       isAttachment: row.querySelector('[data-field="attachment"]')?.checked || false,
-      quantity: row.querySelector('[data-field="quantity"]')?.value === "1" ? "1" : "1+"
+      quantity: row.querySelector('[data-field="quantity"]')?.value === "1" ? "1" : "1+",
+      inputType: row.querySelector('[data-field="inputType"]')?.value || ""
     }))
     .filter((rule) => rule.movement || rule.file);
 }
@@ -371,6 +404,18 @@ function readMovementRules() {
   return readMovementRows()
     .filter((rule) => rule.isAttachment && rule.movement && rule.file)
     .map((rule) => ({ movement: rule.movement, document: rule.file, quantity: rule.quantity }));
+}
+
+function readMovementInputRules() {
+  const seen = new Set();
+  return readMovementRows()
+    .filter((rule) => {
+      const key = normalizeUiKey(rule.movement);
+      if (!rule.movement || !rule.inputType || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((rule) => ({ movement: rule.movement, type: rule.inputType }));
 }
 
 function splitMovementNames(value) {
@@ -698,6 +743,7 @@ function readConfig() {
   data.certificate_name_col = data.certificate_name_col.toUpperCase();
   data.movement_document_rules = readMovementDocumentRules();
   data.movement_attachment_rules = readMovementRules();
+  data.movement_input_rules = readMovementInputRules();
   data.movement_prefill_options = readMovementPrefillOptions();
   data.rtd_cost_table = readRtdCostTable();
   data.signers = parseSignersText($("#signers_text")?.value || "");
@@ -1726,36 +1772,57 @@ function renderProtocols() {
   if (!body) return;
   const filter = ($("#protocolSearch")?.value || "").trim().toLocaleUpperCase("pt-BR");
   body.innerHTML = "";
-  for (const protocol of protocols) {
+  const sortedProtocols = [...protocols].sort((a, b) => Number(Boolean(a.closed)) - Number(Boolean(b.closed)));
+  for (const protocol of sortedProtocols) {
     const label = protocolDisplayLabel(protocol);
     const haystack = `${label} ${protocol.officeProtocol || ""} ${protocol.prenotation || ""}`.toLocaleUpperCase("pt-BR");
     if (filter && !haystack.includes(filter)) continue;
     const row = document.createElement("tr");
     const labelCell = document.createElement("td");
     const statusCell = document.createElement("td");
-    const actionsCell = document.createElement("td");
-    const unlinkButton = document.createElement("button");
+    const situationCell = document.createElement("td");
     labelCell.textContent = label;
     statusCell.textContent = protocol.status || "Rascunho";
-    unlinkButton.type = "button";
-    unlinkButton.textContent = "Desvincular";
-    unlinkButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      unlinkProtocol(protocol.id).catch((error) => log(error.message || String(error)));
-    });
-    actionsCell.appendChild(unlinkButton);
-    row.append(labelCell, statusCell, actionsCell);
+    if (protocol.closed) {
+      const badge = document.createElement("span");
+      badge.className = "protocol-closed-badge";
+      badge.textContent = "Encerrado";
+      situationCell.appendChild(badge);
+    }
+    row.append(labelCell, statusCell, situationCell);
     row.classList.toggle("selected", protocol.id === selectedProtocolId);
-    row.addEventListener("click", () => selectProtocol(protocol.id));
+    row.addEventListener("click", () => openProtocol(protocol.id));
     body.appendChild(row);
   }
+}
+
+async function refreshProtocolShareStatus() {
+  const status = await window.execej.protocolShareStatus();
+  const label = $("#protocolShareStatus");
+  if (!label) return;
+  label.textContent = status.configured
+    ? `Pasta pública: ${status.root}`
+    : "Compartilhamento ainda não configurado. Conecte a pasta pública de rede para acessar os protocolos compartilhados.";
 }
 
 async function reloadProtocols(selectId = selectedProtocolId) {
   protocols = await window.execej.listProtocols();
   renderProtocols();
+  await refreshProtocolShareStatus();
   if (selectId && protocols.some((protocol) => protocol.id === selectId)) selectProtocol(selectId);
   else if (selectedProtocolId && !protocols.some((protocol) => protocol.id === selectedProtocolId)) clearSelectedProtocol();
+}
+
+async function openProtocol(id) {
+  if (selectedProtocol()) {
+    try {
+      await saveCurrentProtocolSilently();
+    } catch (error) {
+      alert(`Não foi possível salvar o protocolo aberto. O próximo protocolo não será aberto para evitar perder alterações.\n\n${error.message || String(error)}`);
+      return;
+    }
+  }
+  selectProtocol(id);
 }
 
 function clearSelectedProtocol() {
@@ -1786,14 +1853,47 @@ function updateProtocolAutuationLocks(protocol) {
   }
 }
 
-function showMovementAttachmentsDialog(requirements) {
+function showMovementAttachmentsDialog(requirements, inputRequirement = null) {
   const dialog = $("#movementAttachmentsDialog");
   const content = $("#movementAttachmentsContent");
-  if (!requirements.length) return Promise.resolve([]);
+  if (!requirements.length && !inputRequirement) {
+    return Promise.resolve({ attachments: [], movementData: {} });
+  }
 
   const groups = requirements.map((requirement) => ({ requirement, files: [] }));
+  const inputSection = inputRequirement ? document.createElement("section") : null;
+  let balanceInput = null;
+  let documentsInput = null;
+  if (inputSection) {
+    inputSection.className = "movement-input-section";
+    if (inputRequirement.type === "balance") {
+      const label = document.createElement("label");
+      label.className = "movement-input-label";
+      label.append("Saldo a Devolver ao Credor: R$ ");
+      balanceInput = document.createElement("input");
+      balanceInput.type = "text";
+      balanceInput.inputMode = "decimal";
+      balanceInput.autocomplete = "off";
+      balanceInput.required = true;
+      balanceInput.placeholder = "0,00";
+      balanceInput.setAttribute("aria-label", "Saldo a Devolver ao Credor");
+      label.appendChild(balanceInput);
+      inputSection.appendChild(label);
+    } else if (inputRequirement.type === "documents") {
+      const label = document.createElement("label");
+      label.className = "movement-input-label";
+      label.append("Documentos juntados (um por linha)");
+      documentsInput = document.createElement("textarea");
+      documentsInput.required = true;
+      documentsInput.rows = 5;
+      documentsInput.placeholder = "Requerimento\nComprovante de pagamento";
+      label.appendChild(documentsInput);
+      inputSection.appendChild(label);
+    }
+  }
   const renderGroups = () => {
     content.innerHTML = "";
+    if (inputSection) content.appendChild(inputSection);
     groups.forEach(({ requirement, files }, groupIndex) => {
       const section = document.createElement("section");
       section.className = "movement-attachment-group";
@@ -1911,7 +2011,27 @@ function showMovementAttachmentsDialog(requirements) {
         alert(`Adicione pelo menos um arquivo em "${missing.requirement.title}".`);
         return;
       }
-      finish(groups.map(({ requirement, files }) => ({ title: requirement.title, files: [...files] })));
+      const movementData = {};
+      if (balanceInput) {
+        movementData.saldo_a_devolver = balanceInput.value.trim();
+        if (!movementData.saldo_a_devolver) {
+          alert("Informe o saldo a devolver ao credor.");
+          balanceInput.focus();
+          return;
+        }
+      }
+      if (documentsInput) {
+        movementData.docs = documentsInput.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        if (!movementData.docs.length) {
+          alert("Informe pelo menos um documento juntado, um por linha.");
+          documentsInput.focus();
+          return;
+        }
+      }
+      finish({
+        attachments: groups.map(({ requirement, files }) => ({ title: requirement.title, files: [...files] })),
+        movementData
+      });
     };
     dialog.addEventListener("cancel", handleCancel);
     $("#cancelMovementAttachments").addEventListener("click", handleCancel);
@@ -2112,20 +2232,22 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
   try {
     await saveCurrentProtocolSilently();
     let attachments = [];
+    let movementData = {};
     let signature = signaturePayload($("#finalSigner"), $("#finalSignerCargo"));
     if (!undo) {
-      const { requirements: attachmentRequirements, requiresSignature } = await window.execej.movementAttachmentRequirements({
+      const { requirements: attachmentRequirements, requiresSignature, input } = await window.execej.movementAttachmentRequirements({
         ...protocolPayload(),
         sheetName: selectedProtocolSheetName,
         sourceRowIndex
       });
-      const selectedAttachments = await showMovementAttachmentsDialog(attachmentRequirements);
-      if (selectedAttachments === null) {
+      const selection = await showMovementAttachmentsDialog(attachmentRequirements, input);
+      if (selection === null) {
         button.disabled = false;
         button.textContent = "Autuar";
         return;
       }
-      attachments = selectedAttachments;
+      attachments = selection.attachments;
+      movementData = selection.movementData;
       if (requiresSignature) {
         signature = await addOnrCertificateForSignature(signature);
         if (!signature) {
@@ -2141,7 +2263,8 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
       ...signature,
       sheetName: selectedProtocolSheetName,
       sourceRowIndex,
-      attachments
+      attachments,
+      movementData
     });
     const index = protocols.findIndex((item) => item.id === result.protocol.id);
     if (index >= 0) protocols[index] = result.protocol;
@@ -2310,8 +2433,19 @@ async function importProtocolOds() {
   const path = await window.execej.pickFile({ title: "Selecionar protocolo ODS", filters: fileFilters("ods") });
   if (!path) return;
   const protocol = await window.execej.inspectProtocolOds(path);
-  const saved = await run("Protocolo importado.", () => window.execej.saveProtocol(protocol));
-  await reloadProtocols(saved.id);
+  const result = await run("", () => window.execej.importProtocol(protocol));
+  if (result.duplicate) {
+    const message = result.synchronized
+      ? "O protocolo já existia na pasta pública; os dados importados foram sincronizados sem criar duplicata."
+      : "O protocolo já existe na pasta pública; nenhuma duplicata foi criada.";
+    log(message);
+    alert(`${protocolDisplayLabel(result.protocol)}: ${message}`);
+  } else {
+    log(result.migrated
+      ? "Protocolo local vinculado à pasta pública."
+      : "Protocolo importado para a pasta pública.");
+  }
+  await reloadProtocols(result.protocol.id);
   showProtocolPanel("protocolData");
 }
 
@@ -2341,18 +2475,18 @@ async function pickProtocolOds() {
   scheduleProtocolAutosave();
 }
 
-async function unlinkProtocol(id = selectedProtocolId) {
-  const protocol = protocols.find((item) => item.id === id);
-  if (!protocol) return;
-  if (!confirm(`Desvincular "${protocolDisplayLabel(protocol)}" e excluir este cadastro da lista?`)) return;
-  await run("Protocolo desvinculado.", () => window.execej.deleteProtocol(protocol.id));
-  await reloadProtocols("");
-  showProtocolList();
-}
-
 function initProtocols() {
   mountProtocolPanels();
   $("#toggleProtocolFiles").addEventListener("click", toggleProtocolFileSidebar);
+  $("#connectProtocolShare").addEventListener("click", async () => {
+    try {
+      const result = await window.execej.connectProtocolShare();
+      if (result?.configured) await reloadProtocols();
+    } catch (error) {
+      alert(`Não foi possível conectar a pasta pública.\n\n${error.message || String(error)}`);
+      log(error.message || String(error));
+    }
+  });
   $("#newDraftProtocol").addEventListener("click", createDraftProtocol);
   $("#importProtocolOds").addEventListener("click", importProtocolOds);
   $("#protocolSearch").addEventListener("input", renderProtocols);
@@ -2366,7 +2500,6 @@ function initProtocols() {
   $("#addSheetColumn").addEventListener("click", addProtocolSheetColumn);
   $("#deleteSheetRow").addEventListener("click", deleteProtocolSheetRow);
   $("#deleteSheetColumn").addEventListener("click", deleteProtocolSheetColumn);
-  $("#unlinkProtocol").addEventListener("click", () => unlinkProtocol(selectedProtocolId).catch((error) => log(error.message || String(error))));
   $("#pickProtocolOds").addEventListener("click", pickProtocolOds);
   $("#pickProtocolFolder").addEventListener("click", async () => {
     const path = await window.execej.pickFolder({ title: "Selecionar pasta do protocolo" });

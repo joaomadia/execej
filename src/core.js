@@ -44,7 +44,13 @@ const DEFAULT_MOVEMENT_ATTACHMENT_RULES = [
   { movement: "Requerimento Consolidação", document: "Comprovante de Pagamento", quantity: "1" },
   { movement: "Valor Venal", document: "Valor Venal", quantity: "1" },
   { movement: "Consolidação", document: "Certidão Matrícula", quantity: "1" },
-  { movement: "Desistência", document: "Requerimento Desistência", quantity: "1+" }
+  { movement: "Desistência", document: "Requerimento Desistência", quantity: "1+" },
+  { movement: "Juntada de Documentos", document: "Documento a ser juntado", quantity: "1+" }
+];
+
+const DEFAULT_MOVEMENT_INPUT_RULES = [
+  { movement: "Saldo a Devolver", type: "balance" },
+  { movement: "Juntada de Documentos", type: "documents" }
 ];
 
 const MOVEMENT_PREFILL_OPTIONS = [
@@ -65,7 +71,9 @@ const MOVEMENT_PREFILL_OPTIONS = [
   "Consolidação",
   "Decurso de Prazo da Prenotação",
   "Arquivamento",
-  "Desistência"
+  "Desistência",
+  "Saldo a Devolver",
+  "Juntada de Documentos"
 ];
 
 const DEFAULT_CONFIG = {
@@ -80,6 +88,7 @@ const DEFAULT_CONFIG = {
   certificate_name_col: "F",
   movements_sheet: "Movimentações",
   movement_attachment_rules: DEFAULT_MOVEMENT_ATTACHMENT_RULES,
+  movement_input_rules: DEFAULT_MOVEMENT_INPUT_RULES,
   movement_prefill_options: MOVEMENT_PREFILL_OPTIONS,
   rtd_cost_table: [],
   signers: [],
@@ -197,6 +206,11 @@ function normalizeKey(value) {
 
 function normalizeForMatch(value) {
   return normalizeKey(value).replace(/_/g, "");
+}
+
+function protocolIsClosed(protocol) {
+  return Object.values(protocol?.autuacoesMovimentacoes || {})
+    .some((record) => normalizeForMatch(record?.movement) === "ARQUIVAMENTO");
 }
 
 function xmlEscape(value) {
@@ -759,6 +773,321 @@ function movementDocumentName(movement, previousMovements = [], config = {}) {
     return "Certidão Arquivamento por Consolidação";
   }
   return "";
+}
+
+function movementFromAutuationPdfLabel(label, config = {}) {
+  const key = normalizeForMatch(label);
+  const documentRules = normalizeMovementDocumentRules(config);
+  const attachmentRules = normalizeMovementAttachmentRules(config);
+  const inputRules = normalizeMovementInputRules(config);
+  const movementAliases = (value) => value.split(/[;|\n]+/).map((movement) => movement.trim()).filter(Boolean);
+  const movementFromMatchingRule = (rules) => {
+    for (const rule of rules) {
+      const aliases = movementAliases(rule.movement);
+      if (aliases.some((movement) => normalizeForMatch(movement) === key)) return aliases[0];
+    }
+    return "";
+  };
+  const directMovement = movementFromMatchingRule(documentRules)
+    || movementFromMatchingRule(attachmentRules)
+    || movementFromMatchingRule(inputRules);
+  if (directMovement) return directMovement;
+  const compositeAttachmentRules = attachmentRules.flatMap((rule) => {
+    const document = rule.document.replace(/\s*\(DATA\)\s*$/i, "");
+    const aliases = movementAliases(rule.movement);
+    return aliases.map((movement) => ({
+      label: `${movement} - ${document}`,
+      movement: aliases[0]
+    }));
+  }).filter((rule) => normalizeForMatch(rule.label) === key);
+  const compositeMovements = [...new Set(compositeAttachmentRules.map((rule) => normalizeForMatch(rule.movement)))];
+  if (compositeMovements.length === 1) return compositeAttachmentRules[0].movement;
+  if (compositeMovements.length > 1) return "";
+  const linkedRules = [
+    ...documentRules.map((rule) => ({ label: rule.file, movement: movementAliases(rule.movement)[0] || "" })),
+    ...attachmentRules.map((rule) => ({
+      label: rule.document.replace(/\s*\(DATA\)\s*$/i, ""),
+      movement: movementAliases(rule.movement)[0] || ""
+    }))
+  ].filter((rule) => normalizeForMatch(rule.label) === key);
+  const linkedMovements = [...new Map(linkedRules.map((rule) => [
+    normalizeForMatch(rule.movement),
+    rule.movement
+  ])).values()];
+  if (linkedMovements.length === 1) return linkedMovements[0];
+  if (linkedMovements.length > 1) return "";
+
+  if (
+    key.startsWith("SALDOADEVOLVER")
+    || key.startsWith("CERTIDAOSALDOADEVOLVER")
+    || key.startsWith("CERTIDAODESALDOADEVOLVER")
+    || key.startsWith("SALDODEVOLVIDO")
+    || key.startsWith("CERTIDAODESALDODEVOLVIDO")
+  ) return "Saldo a Devolver";
+  if (key.startsWith("ARQUIVAMENTO")) return "Arquivamento";
+  if (key.startsWith("DESISTENCIA")) return "Desistência";
+  if (key.startsWith("PRENOTACAO") || key.startsWith("PRENOTADO") || key.startsWith("AUTUACAO")) return "Prenotado";
+  if (key.startsWith("ARQUIVOSCOMPATIVEIS")) return "Arquivos Compatíveis";
+  if (key.startsWith("ARQUIVOSINCOMPATIVEIS")) return "Arquivos Incompatíveis";
+  if (key.startsWith("EXIGENCIACUMPRIDA")) return "Exigência Cumprida";
+  if (key.startsWith("EXIGENCIA")) return "Exigência";
+  if (key.startsWith("NOTIFICACAOENVIADA") || key.startsWith("CARTADENOTIFICACAO")) return "Notificação Enviada";
+  if (key.startsWith("EDITAL")) return "Edital";
+  if (key.startsWith("INTIMADO") || key.startsWith("INTIMACAOPOSITIVA") || key.startsWith("CERTIDAONOTIFICACOESRTDPOSITIVAS")) return "Intimado";
+  if (key.startsWith("NAOINTIMADO") || key.startsWith("INTIMACAONEGATIVA") || key.startsWith("CERTIDAONOTIFICACOESRTDNEGATIVAS")) return "Não Intimado";
+  if (key.startsWith("TRANSCURSODEPRAZO")) return "Transcurso de Prazo";
+  if (key.startsWith("REQUERIMENTOCONSOLIDACAO")) return "Requerimento Consolidação";
+  if (key.startsWith("VALORVENAL")) return "Valor Venal";
+  if (key.startsWith("CONSOLIDACAO")) return "Consolidação";
+  if (key.startsWith("JUNTADADEDOCUMENTOS")) return "Juntada de Documentos";
+  return "";
+}
+
+function recoverMovementsFromPdfs(rows, pdfPaths, config = {}) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  const layout = movementLayout(rows);
+  if (layout.headerIndex < 0) return rows;
+  const duplicateRows = [];
+  const existing = new Set();
+  const entries = movementRowsFromSheetRows(rows).entries;
+  const hasValidMovementDate = (row) => {
+    const [fileDate] = movementDateValues(row, layout);
+    return /^\d{2}\.\d{2}\.\d{4}$/.test(fileDate) && !fileDate.startsWith("00.00.");
+  };
+  for (const entry of entries) {
+    const movement = movementFromAutuationPdfLabel(entry.movement, config);
+    if (!movement) continue;
+    entry.row[layout.movement] = movement;
+    if (!getCell(entry.row, layout.document)) {
+      entry.row[layout.document] = movementDocumentName(movement, [], config);
+    }
+    const [fileDate] = movementDateValues(entry.row, layout);
+    if (!/^\d{2}\.\d{2}\.\d{4}$/.test(fileDate) || fileDate.startsWith("00.00.")) continue;
+    const key = `${normalizeForMatch(movement)}|${normalizeForMatch(fileDate)}`;
+    if (existing.has(key)) duplicateRows.push(entry.sourceRow);
+    else existing.add(key);
+  }
+  for (const rowIndex of duplicateRows.sort((a, b) => b - a)) rows.splice(rowIndex, 1);
+
+  const pending = new Map();
+  for (const pdfPath of Array.isArray(pdfPaths) ? pdfPaths : []) {
+    if (path.extname(String(pdfPath || "")).toLowerCase() !== ".pdf") continue;
+    const filename = path.basename(String(pdfPath), path.extname(String(pdfPath)));
+    const match = filename.match(/^(.+?)\s*-\s*(\d{1,2})[.-](\d{1,2})[.-](\d{4})(?:\s+-\s+|$)/);
+    if (!match) continue;
+    const movement = movementFromAutuationPdfLabel(match[1], config);
+    if (!movement) continue;
+    const [, , day, month, year] = match;
+    const date = `${day.padStart(2, "0")}.${month.padStart(2, "0")}.${year}`;
+    const key = `${normalizeForMatch(movement)}|${normalizeForMatch(date)}`;
+    if (!existing.has(key)) pending.set(key, { movement, day: day.padStart(2, "0"), month: Number(month), year });
+  }
+
+  const autoPrenotado = entries.find((entry) => (
+    normalizeForMatch(entry.movement) === "PRENOTADO"
+    && !hasValidMovementDate(entry.row)
+  ));
+  const additions = [...pending.entries()];
+  const prenotadoIndex = additions.findIndex(([key]) => key.startsWith("PRENOTADO|"));
+  if (autoPrenotado && prenotadoIndex >= 0) {
+    const [, item] = additions.splice(prenotadoIndex, 1)[0];
+    const row = autoPrenotado.row;
+    ensureRowLength(row, Math.max(layout.movement, layout.date, layout.day, layout.month, layout.year, layout.document));
+    row[layout.movement] = item.movement;
+    row[layout.date] = `${item.day}/${String(item.month).padStart(2, "0")}/${item.year}`;
+    row[layout.day] = item.day;
+    row[layout.month] = MONTHS_PT[item.month] || String(item.month);
+    row[layout.year] = item.year;
+    row[layout.document] = movementDocumentName(item.movement, [], config);
+  }
+
+  const additionRows = additions.map(([, item]) => {
+    const row = [];
+    ensureRowLength(row, Math.max(layout.movement, layout.date, layout.day, layout.month, layout.year, layout.document));
+    row[layout.movement] = item.movement;
+    row[layout.date] = `${item.day}/${String(item.month).padStart(2, "0")}/${item.year}`;
+    row[layout.day] = item.day;
+    row[layout.month] = MONTHS_PT[item.month] || String(item.month);
+    row[layout.year] = item.year;
+    row[layout.document] = movementDocumentName(item.movement, [], config);
+    return row;
+  });
+  rows.push(...additionRows);
+
+  const movementEntries = movementRowsFromSheetRows(rows).entries;
+  const rowPositions = movementEntries.map((entry) => entry.sourceRow);
+  const orderedRows = movementEntries
+    .map((entry, order) => ({ row: entry.row, order, date: movementDateValues(entry.row, layout)[0] }))
+    .sort((a, b) => {
+      const dateNumber = (value) => {
+        const match = String(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        return match ? Number(`${match[3]}${match[2]}${match[1]}`) : Number.MAX_SAFE_INTEGER;
+      };
+      return dateNumber(a.date) - dateNumber(b.date) || a.order - b.order;
+    })
+    .map((entry) => entry.row);
+  rowPositions.forEach((position, index) => {
+    rows[position] = orderedRows[index];
+  });
+  return rows;
+}
+
+function autuationRecordsInMovementOrder(autuacoesMovimentacoes) {
+  return Object.entries(autuacoesMovimentacoes || {})
+    .filter(([, record]) => record && Array.isArray(record.files))
+    .sort(([a], [b]) => {
+      const aRow = Number(a);
+      const bRow = Number(b);
+      if (Number.isInteger(aRow) && Number.isInteger(bRow) && aRow !== bRow) return aRow - bRow;
+      if (Number.isInteger(aRow) !== Number.isInteger(bRow)) return Number.isInteger(aRow) ? -1 : 1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+}
+
+function autuationRecordParts(record) {
+  const hasParts = Array.isArray(record.parts) && record.parts.length > 0;
+  const parts = hasParts
+    ? record.parts.map((part, index) => ({
+      ...part,
+      file: String(part.file || ""),
+      kind: String(part.kind || (part.fixedPosition === "bookend" ? "bookend" : "")),
+      order: Number.isFinite(Number(part.order)) ? Number(part.order) : index
+    }))
+    : record.files.map((file, order) => ({ file: String(file || ""), order }));
+  const kindOrder = { document: 0, "": 0, attachment: 1, bookend: 2 };
+  parts.sort((a, b) => (
+    (kindOrder[a.kind] ?? 0) - (kindOrder[b.kind] ?? 0)
+    || a.order - b.order
+  ));
+
+  const seriesByKey = new Map();
+  const series = [];
+  for (const [index, part] of parts.entries()) {
+    const name = path.basename(part.file, path.extname(part.file));
+    const numbered = name.match(/^(.*?)(?:\s+-\s+|\s+)(\d{2,})$/);
+    const key = normalizeForMatch(numbered ? numbered[1] : name);
+    let group = seriesByKey.get(key);
+    if (!group) {
+      group = [];
+      seriesByKey.set(key, group);
+      series.push(group);
+    }
+    group.push({
+      part,
+      index,
+      number: numbered ? Number(numbered[2]) : 1
+    });
+  }
+  const orderedParts = series.flatMap((group) => group.length < 2
+    ? group.map(({ part }) => part)
+    : group
+      .sort((a, b) => a.number - b.number || a.index - b.index)
+      .map(({ part }) => part));
+
+  if (!isAutuacaoDocument(record.documentName)) {
+    return orderedParts.map((part, order) => ({ ...part, order }));
+  }
+  const movementPrefix = normalizeForMatch(record.movement);
+  if (!movementPrefix) return orderedParts.map((part, order) => ({ ...part, order }));
+  const coverIndex = orderedParts.findIndex(({ file }) => {
+    const fileName = normalizeForMatch(path.basename(file, path.extname(file)));
+    return fileName.startsWith(movementPrefix) && /^\d{8}/.test(fileName.slice(movementPrefix.length));
+  });
+  if (coverIndex < 0) return orderedParts;
+
+  orderedParts.unshift(orderedParts.splice(coverIndex, 1)[0]);
+  return orderedParts.map((part, order) => ({ ...part, order }));
+}
+
+function mergeRecoveredAutuations(rows, storedAutuations, recoveredAutuations) {
+  const { entries } = movementRowsFromSheetRows(rows);
+  const entryByRow = new Map(entries.map((entry) => [String(entry.sourceRow), entry]));
+  const merged = {};
+  const seenEvents = new Set();
+  for (const [rowKey, record] of [
+    ...Object.entries(recoveredAutuations || {}),
+    ...Object.entries(storedAutuations || {})
+  ]) {
+    if (!record || !Array.isArray(record.files) || !record.files.length) continue;
+    const entry = entryByRow.get(rowKey);
+    if (!entry || normalizeForMatch(record.movement) !== normalizeForMatch(entry.movement)) continue;
+    const [fileDate] = movementDateValues(entry.row, entry.layout);
+    const eventKey = `${normalizeForMatch(entry.movement)}|${normalizeForMatch(fileDate)}`;
+    if (seenEvents.has(eventKey)) continue;
+    seenEvents.add(eventKey);
+    merged[rowKey] = record;
+  }
+  return merged;
+}
+
+function recoverAutuationsFromPdfs(rows, pdfPaths, config = {}) {
+  const { entries } = movementRowsFromSheetRows(rows);
+  const files = (Array.isArray(pdfPaths) ? pdfPaths : [])
+    .filter((filePath) => path.extname(String(filePath || "")).toLowerCase() === ".pdf")
+    .map((filePath) => ({ path: String(filePath), name: normalizeForMatch(path.basename(String(filePath))) }));
+  const recovered = {};
+  const usedFiles = new Set();
+  const attachmentRules = normalizeMovementAttachmentRules(config);
+  const documentRules = normalizeMovementDocumentRules(config);
+
+  for (const [entryIndex, entry] of entries.entries()) {
+    const previousMovements = entries.slice(0, entryIndex).map((item) => item.movement);
+    const documentName = getCell(entry.row, entry.layout.document)
+      || movementDocumentName(entry.movement, previousMovements, config);
+    const [fileDate] = movementDateValues(entry.row, entry.layout);
+    const dateKey = normalizeForMatch(fileDate);
+    const labels = new Set([entry.movement, documentName]);
+    if (movementMatches(entry.movement, ["Saldo a Devolver", "Saldo Devolvido"])) {
+      labels.add("Certidão Saldo a Devolver");
+      labels.add("Certidão de Saldo a Devolver");
+      labels.add("Certidão Saldo Devolvido");
+      labels.add("Certidão de Saldo Devolvido");
+    }
+    if (normalizeForMatch(entry.movement).includes("ARQUIVAMENTO")) labels.add("Arquivamento");
+    for (const rule of documentRules) {
+      if (movementMatches(entry.movement, rule.movement)) labels.add(rule.file);
+    }
+    for (const rule of attachmentRules) {
+      if (movementMatches(entry.movement, rule.movement)) {
+        const document = String(rule.document || "").replace(/\s+\(DATA\)\s*$/i, "");
+        labels.add(document);
+        labels.add(`${entry.movement} - ${document}`);
+      }
+    }
+    const prefixes = [...labels]
+      .map((label) => normalizeForMatch(label))
+      .filter(Boolean)
+      .map((label) => `${label}${dateKey}`);
+    const matchingAttachmentRules = attachmentRules
+      .filter((rule) => movementMatches(entry.movement, rule.movement))
+      .map((rule) => String(rule.document || "").replace(/\s+\(DATA\)\s*$/i, ""));
+    const matchedFiles = files.filter((file) => (
+      !usedFiles.has(file.path) && prefixes.some((prefix) => file.name.startsWith(prefix))
+    )).map((file) => {
+      const attachment = matchingAttachmentRules.some((document) => (
+        file.name.startsWith(`${normalizeForMatch(document)}${dateKey}`)
+        || file.name.startsWith(`${normalizeForMatch(`${entry.movement} - ${document}`)}${dateKey}`)
+      ));
+      return { ...file, kind: attachment ? "attachment" : "document" };
+    });
+    if (!matchedFiles.length) continue;
+
+    if (isAutuacaoDocument(documentName)) {
+      const coverPrefix = `${normalizeForMatch(entry.movement)}${dateKey}`;
+      matchedFiles.sort((a, b) => Number(b.name.startsWith(coverPrefix)) - Number(a.name.startsWith(coverPrefix)));
+    }
+    for (const file of matchedFiles) usedFiles.add(file.path);
+    const rowKey = String(entry.sourceRow);
+    recovered[rowKey] = {
+      files: matchedFiles.map((file) => file.path),
+      parts: matchedFiles.map((file, order) => ({ file: file.path, order, kind: file.kind })),
+      hasAttachments: matchedFiles.some((file) => file.kind === "attachment"),
+      movement: entry.movement,
+      documentName,
+      autuadoEm: new Date(Math.max(...matchedFiles.map((file) => fs.statSync(file.path).mtimeMs))).toISOString()
+    };
+  }
+  return recovered;
 }
 
 function ensureRowLength(row, length) {
@@ -1465,6 +1794,72 @@ function normalizeMovementAttachmentRules(config = {}) {
   return rules.length || hasCustomRules ? rules : cloneMovementRules(DEFAULT_MOVEMENT_ATTACHMENT_RULES);
 }
 
+function normalizeMovementInputRules(config = {}) {
+  const hasCustomRules = Array.isArray(config.movement_input_rules);
+  const source = hasCustomRules ? config.movement_input_rules : DEFAULT_MOVEMENT_INPUT_RULES;
+  return source
+    .map((rule) => {
+      const movement = String(rule?.movement ?? rule?.movimentacao ?? "").trim();
+      const type = String(rule?.type ?? rule?.input ?? "").trim().toLowerCase();
+      return movement && ["balance", "documents"].includes(type) ? { movement, type } : null;
+    })
+    .filter(Boolean);
+}
+
+function movementInputRequirement(movement, config = {}) {
+  return normalizeMovementInputRules(config)
+    .find((rule) => movementMatches(movement, rule.movement)) || null;
+}
+
+function normalizeMovementBalance(value) {
+  const text = String(value ?? "").trim().replace(/^R\$\s*/i, "").replace(/\s/g, "");
+  let integer;
+  let fraction = "";
+  if (text.includes(",")) {
+    const match = text.match(/^((?:\d{1,3}(?:\.\d{3})+|\d+))(?:,(\d{1,2}))?$/);
+    if (!match) throw new Error("Informe um saldo válido, por exemplo: 1.234,56.");
+    integer = match[1].replace(/\./g, "");
+    fraction = match[2] || "";
+  } else {
+    const grouped = text.match(/^(\d{1,3}(?:\.\d{3})+)$/);
+    const decimal = text.match(/^(\d+)(?:\.(\d{1,2}))?$/);
+    if (!grouped && !decimal) throw new Error("Informe um saldo válido, por exemplo: 1.234,56.");
+    integer = (grouped ? grouped[1] : decimal[1]).replace(/\./g, "");
+    fraction = grouped ? "" : (decimal[2] || "");
+  }
+  const normalizedInteger = BigInt(integer).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${normalizedInteger},${fraction.padEnd(2, "0")}`;
+}
+
+function prepareMovementInputFields(inputRequirement, input = {}) {
+  if (!inputRequirement) {
+    if (input && Object.values(input).some((value) => String(value ?? "").trim())) {
+      throw new Error("Esta movimentação não está configurada para receber dados adicionais.");
+    }
+    return {};
+  }
+  if (inputRequirement.type === "balance") {
+    const balance = normalizeMovementBalance(input.saldo_a_devolver ?? input.balance);
+    return { SALDO_A_DEVOLVER: balance };
+  }
+  if (inputRequirement.type === "documents") {
+    const docs = Array.isArray(input.docs)
+      ? input.docs.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : String(input.docs ?? "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    if (!docs.length) throw new Error("Informe pelo menos um documento juntado, um por linha.");
+    return {
+      DOCS: docs.map((item) => `- ${item}`).join("\n"),
+      S: docs.length > 1 ? "s" : ""
+    };
+  }
+  throw new Error("Tipo de dados adicionais da movimentação inválido.");
+}
+
+function addMovementInputFields(fields, inputRequirement, input = {}) {
+  const values = prepareMovementInputFields(inputRequirement, input);
+  for (const [key, value] of Object.entries(values)) addField(fields, key, value);
+}
+
 function normalizeMovementPrefillOptions(config = {}) {
   const source = Array.isArray(config.movement_prefill_options)
     ? config.movement_prefill_options
@@ -1483,6 +1878,7 @@ function normalizeMovementPrefillOptions(config = {}) {
 
 function normalizeConfig(config = {}) {
   const merged = { ...DEFAULT_CONFIG, ...config };
+  const isLegacyMovementConfig = !Array.isArray(config.movement_input_rules);
   merged.onr_signature_enabled = merged.onr_signature_enabled === true;
   merged.onr_api_key = String(merged.onr_api_key || "").trim();
   merged.models_folder = String(merged.models_folder || "").trim();
@@ -1498,7 +1894,20 @@ function normalizeConfig(config = {}) {
   merged.image_output_filename = String(merged.image_output_filename || DEFAULT_CONFIG.image_output_filename).trim();
   merged.movement_document_rules = normalizeMovementDocumentRules(merged);
   merged.movement_attachment_rules = normalizeMovementAttachmentRules(merged);
+  merged.movement_input_rules = normalizeMovementInputRules(merged);
   merged.movement_prefill_options = normalizeMovementPrefillOptions(merged);
+  if (isLegacyMovementConfig) {
+    if (!merged.movement_attachment_rules.some((rule) => movementMatches("Juntada de Documentos", rule.movement))) {
+      merged.movement_attachment_rules.push({
+        movement: "Juntada de Documentos",
+        document: "Documento a ser juntado",
+        quantity: "1+"
+      });
+    }
+    merged.movement_prefill_options = normalizeMovementPrefillOptions({
+      movement_prefill_options: [...merged.movement_prefill_options, "Saldo a Devolver", "Juntada de Documentos"]
+    });
+  }
   merged.rtd_cost_table = normalizeRtdCostTable(merged.rtd_cost_table || merged.rtdCostTable);
   return merged;
 }
@@ -1559,13 +1968,13 @@ function slotFromMovementRule(row, movement, movementIndex, layout, rule) {
   return slot;
 }
 
-function fixedCertificateTalaoSlot() {
+function fixedCertificateTalaoSlot(rowIndex = -1) {
   return {
     title: "Certidão Talão",
     movement: "Regra fixa",
     movement_date: "",
     single_file: true,
-    row_index: -1,
+    row_index: rowIndex,
     file_date: "00.00.0000",
     long_date: "",
     fixed_position: "bookend",
@@ -1591,8 +2000,11 @@ function movementAttachmentRequirements(odsPath, sheetName, sourceRowIndex, conf
   const entryIndex = entries.findIndex((entry) => entry.sourceRow === Number(sourceRowIndex));
   if (entryIndex < 0) throw new Error("A movimentação selecionada não foi encontrada na guia.");
   const entry = entries[entryIndex];
-  if (isCompatibilityMovement(entry.movement) && compatibilityAttachmentCoveredByPreviousMovement(entries, entryIndex)) return [];
-  return normalizeMovementAttachmentRules(config)
+  const isFinalArchivingMovement = normalizeKey(entry.movement).includes("ARQUIVAMENTO")
+    && !entries.slice(entryIndex + 1).some(({ movement }) => normalizeKey(movement).includes("ARQUIVAMENTO"));
+  const movementAttachmentsSuppressed = movementInputRequirement(entry.movement, config)?.type === "balance"
+    || (isCompatibilityMovement(entry.movement) && compatibilityAttachmentCoveredByPreviousMovement(entries, entryIndex));
+  const requirements = (movementAttachmentsSuppressed ? [] : normalizeMovementAttachmentRules(config))
     .filter((rule) => movementMatches(entry.movement, rule.movement))
     .map((rule) => {
       const slot = slotFromMovementRule(entry.row, entry.movement, entry.movementIndex, entry.layout, rule);
@@ -1603,9 +2015,32 @@ function movementAttachmentRequirements(odsPath, sheetName, sourceRowIndex, conf
         row_index: slot.row_index,
         file_date: slot.file_date,
         long_date: slot.long_date,
-        single_file: slot.single_file
+        single_file: slot.single_file,
+        fixed_position: slot.fixed_position
       };
     });
+  if (isFinalArchivingMovement) {
+    const talao = fixedCertificateTalaoSlot(entry.movementIndex);
+    requirements.push({
+      title: talao.title,
+      movement: talao.movement,
+      movement_date: talao.movement_date,
+      row_index: talao.row_index,
+      file_date: talao.file_date,
+      long_date: talao.long_date,
+      single_file: talao.single_file,
+      fixed_position: talao.fixed_position
+    });
+  }
+  return requirements;
+}
+
+function movementInputRequirementForRow(odsPath, sheetName, sourceRowIndex, config = {}) {
+  const rows = readOdsSheet(odsPath, sheetName || config.movements_sheet);
+  const { entries } = movementRowsFromSheetRows(rows);
+  const entry = entries.find((item) => item.sourceRow === Number(sourceRowIndex));
+  if (!entry) throw new Error("A movimentação selecionada não foi encontrada na guia.");
+  return movementInputRequirement(entry.movement, config);
 }
 
 function movementRequiresOnrSignature(odsPath, sheetName, sourceRowIndex, config = {}) {
@@ -1843,7 +2278,7 @@ function addGenerationDateFields(fields) {
   for (const key of ["DATA_ENCERRAMENTO", "DATA-ENCERRAMENTO", "DATA ENCERRAMENTO", "DATA_DE_ENCERRAMENTO", "DATA DE ENCERRAMENTO"]) addField(fields, key, today);
 }
 
-function addMovementFields(fields, row, context, layout = null) {
+function addMovementFields(fields, row, context, layout = null, inputRequirement = null, movementInput = {}) {
   const columns = layout || { movement: 1, document: 6, day: 3, month: 4, year: 5 };
   const [fileDate, longDate] = movementDateValues(row, layout);
   const autuationDate = autuationDateFromMovement(row, layout) || longDate;
@@ -1879,6 +2314,7 @@ function addMovementFields(fields, row, context, layout = null) {
   addField(fields, "MES", getCell(row, columns.month));
   addField(fields, "MÊS", getCell(row, columns.month));
   addField(fields, "ANO", getCell(row, columns.year));
+  addMovementInputFields(fields, inputRequirement, movementInput);
   addGenerationDateFields(fields);
 }
 
@@ -1963,8 +2399,33 @@ function odtItemsBlock(value, paragraphAttrs = "") {
     .join(`<text:p${attrsText}/>`);
 }
 
+function odtDocumentListBlock(value, paragraphAttrs, paragraphContent) {
+  const paragraphs = String(value || "").split(/\r?\n/).filter(Boolean);
+  if (!paragraphs.length) return "";
+  const content = paragraphContent.trim();
+  const databaseFields = [...content.matchAll(/<text:database-display\b([^>]*)>[\s\S]*?<\/text:database-display>/g)];
+  const docsField = databaseFields.find((match) => /(?:text:column-name|text:name)="DOCS"/.test(match[1]));
+  const placeholder = content.match(/^(?:\{\{DOCS\}\}|\[\[DOCS\]\]|&lt;DOCS&gt;|<<DOCS>>|<DOCS>)$/);
+  const styledPlaceholder = content.match(/^<text:span\b([^>]*)>(?:\{\{DOCS\}\}|\[\[DOCS\]\]|&lt;DOCS&gt;|<<DOCS>>)<\/text:span>$/);
+  if (!docsField && !placeholder && !styledPlaceholder) return null;
+  const prefix = docsField ? content.slice(0, docsField.index) : "";
+  const suffix = docsField ? content.slice(docsField.index + docsField[0].length) : "";
+  if ((prefix || suffix) && (prefix.trim() || suffix.trim())) return null;
+  const spanAttrs = styledPlaceholder?.[1] || "";
+  const attrsText = paragraphAttrs || "";
+  return paragraphs
+    .map((part) => `<text:p${attrsText}>${spanAttrs ? `<text:span${spanAttrs}>${odtValue(part)}</text:span>` : odtValue(part)}</text:p>`)
+    .join("");
+}
+
 function replaceFieldsInXml(xml, fields) {
   let text = xml;
+  if (fields.DOCS) {
+    text = text.replace(/<text:p\b(?![^>]*\/>)([^>]*)>((?:(?!<\/text:p>)[\s\S])*)<\/text:p>/g, (match, paragraphAttrs, paragraphContent) => {
+      const replacement = odtDocumentListBlock(fields.DOCS, paragraphAttrs, paragraphContent);
+      return replacement === null ? match : replacement;
+    });
+  }
   const items = fields.ITENS || fields.ITEMS;
   if (items) {
     text = text.replace(
@@ -2746,28 +3207,19 @@ async function mergePdfs(pdfPaths, outputPath) {
   fs.writeFileSync(outputPath, await merged.save());
 }
 
-async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, outputDir) {
+async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, outputDir, filename = "visualizacao-autuacoes.pdf") {
   const pdfsDir = path.resolve(protocolFolder, "Autuação", "PDFs");
-  const records = Object.entries(autuacoesMovimentacoes || {})
-    .filter(([, record]) => record && Array.isArray(record.files))
+  const records = autuationRecordsInMovementOrder(autuacoesMovimentacoes)
     .map(([rowIndex, record], index) => ({
       rowIndex,
       record,
-      index,
-      timestamp: Date.parse(record.autuadoEm || "")
-    }))
-    .sort((a, b) => {
-      const aTimestamp = Number.isFinite(a.timestamp) ? a.timestamp : Number.MAX_SAFE_INTEGER;
-      const bTimestamp = Number.isFinite(b.timestamp) ? b.timestamp : Number.MAX_SAFE_INTEGER;
-      return aTimestamp - bTimestamp || a.index - b.index;
-    });
+      index
+    }));
   if (!records.length) throw new Error("Ainda não há movimentações autuadas para visualizar.");
 
   const pdfPaths = [];
   for (const { rowIndex, record } of records) {
-    const parts = Array.isArray(record.parts) && record.parts.length
-      ? [...record.parts].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
-      : record.files.map((file) => ({ file }));
+    const parts = autuationRecordParts(record);
     if (!parts.length) throw new Error(`A autuação da movimentação ${rowIndex} não contém PDFs.`);
     for (const part of parts) {
       const filePath = path.resolve(String(part.file || ""));
@@ -2781,7 +3233,8 @@ async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, ou
     }
   }
 
-  const outputPath = path.join(outputDir, "visualizacao-autuacoes.pdf");
+  const outputName = safeFilename(path.basename(String(filename || ""), path.extname(String(filename || ""))), "visualizacao-autuacoes");
+  const outputPath = path.join(outputDir, `${outputName}.pdf`);
   await mergePdfs(pdfPaths, outputPath);
   return outputPath;
 }
@@ -3133,7 +3586,7 @@ function fixedDocumentOutputOrder(movementName, documentName) {
   return 0;
 }
 
-async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, protocolFolder, pdfsDir, outputDir = pdfsDir, tempDir, onProgress, signatureData }) {
+async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, protocolFolder, pdfsDir, outputDir = pdfsDir, tempDir, onProgress, signatureData, movementInputRequirement: inputRequirement = null, movementInputData = {} }) {
   const generated = [];
   let extractionPrenotationFields = null;
   let consolidationFields = null;
@@ -3190,7 +3643,7 @@ async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, p
     try {
       if (source.type === "model") {
         requiresSignature = modelHasSignatureFields(source.path);
-        addMovementFields(fields, row, context, layout);
+        addMovementFields(fields, row, context, layout, inputRequirement, movementInputData);
         addSignatureFields(fields, config, signatureData);
         const tempOdt = path.join(tempDir, `fixo_${String(movementIndex).padStart(3, "0")}_${safeFilename(documentName)}.odt`);
         mergeOdtDocument(source.path, tempOdt, fields);
@@ -3205,12 +3658,12 @@ async function generateFixedPdfs({ config, odsPath, slots, fixedRows, context, p
     fs.copyFileSync(convertedPdf, outputPdf);
     const outputRowIndex = movementIndex;
     const outputOrder = fixedDocumentOutputOrder(movementName, documentName);
-    generated.push([outputRowIndex, outputOrder, outputPdf, requiresSignature]);
+    generated.push([outputRowIndex, outputOrder, outputPdf, requiresSignature, "", "document"]);
   }
   return generated;
 }
 
-async function copyAttachmentPdfs({ slots, context, pdfsDir, tempDir, onProgress }) {
+async function copyAttachmentPdfs({ slots, context, pdfsDir, tempDir, onProgress, bookendMode = true }) {
   const copied = [];
   for (let slotPosition = 0; slotPosition < slots.length; slotPosition += 1) {
     const slot = slots[slotPosition];
@@ -3225,13 +3678,15 @@ async function copyAttachmentPdfs({ slots, context, pdfsDir, tempDir, onProgress
       } catch (error) {
         throw new Error(`Falha ao converter anexo "${source}": ${error.message}`);
       }
-      const outputPdf = uniquePath(path.join(pdfsDir, `${safeFilename(slotName)} - ${fileDate} - ${safeFilename(context.label)}.pdf`));
+      const movementName = slot.fixed_position === "bookend" ? "" : safeFilename(slot.movement, "");
+      const outputParts = [movementName, safeFilename(slotName), fileDate, safeFilename(context.label)].filter(Boolean);
+      const outputPdf = uniquePath(path.join(pdfsDir, `${outputParts.join(" - ")}.pdf`));
       fs.copyFileSync(convertedPdf, outputPdf);
-      if (slot.fixed_position === "bookend") {
+      if (slot.fixed_position === "bookend" && bookendMode) {
         copied.push([Number.MIN_SAFE_INTEGER, 0, outputPdf]);
         copied.push([Number.MAX_SAFE_INTEGER, 0, outputPdf]);
       } else {
-        copied.push([slot.row_index, 1000 + slotPosition * 100 + fileIndex + 1, outputPdf]);
+        copied.push([slot.row_index, 1000 + slotPosition * 100 + fileIndex + 1, outputPdf, false, slot.fixed_position || "", "attachment"]);
       }
     }
   }
@@ -3446,7 +3901,15 @@ async function generateFinalPdf(config, data, onProgress) {
   const sheetName = data.sheetName || config.movements_sheet;
   const slots = data.slots || [];
   if (!slots.length) throw new Error("Leia as movimentações antes de juntar o PDF.");
-  const missing = slots.filter((slot) => !slot.optional && (!slot.files || !slot.files.length)).map((slot) => slot.title);
+  const autuacoesMovimentacoes = data.autuacoesMovimentacoes || {};
+  const hasAutuatedTalao = Object.values(autuacoesMovimentacoes).some((autuation) => (
+    Array.isArray(autuation?.parts) && autuation.parts.some((part) => part.fixedPosition === "bookend")
+  ));
+  const missing = slots
+    .filter((slot) => !slot.optional
+      && !(hasAutuatedTalao && slot.fixed_position === "bookend")
+      && (!slot.files || !slot.files.length))
+    .map((slot) => slot.title);
   if (missing.length) throw new Error(`Ainda há colunas sem anexo:\n\n${missing.slice(0, 12).join("\n")}`);
   const rows = readOdsSheet(odsPath, sheetName);
   const context = protocolContextFromValues(data, odsPath);
@@ -3455,7 +3918,7 @@ async function generateFinalPdf(config, data, onProgress) {
   const pdfsDir = path.join(autuacaoDir, "PDFs");
   const fixedRows = fixedDocumentRows(rows);
   const orderedParts = [];
-  const autuacoesMovimentacoes = data.autuacoesMovimentacoes || {};
+  let certificateTalaoPath = "";
   const movimentacoesNaoAutuadas = fixedRows.filter(([, , , entryIndex, entries]) => {
     const sourceRowIndex = entries[entryIndex]?.sourceRow;
     return !autuacoesMovimentacoes[String(sourceRowIndex)];
@@ -3470,12 +3933,14 @@ async function generateFinalPdf(config, data, onProgress) {
     if (!autuation.files.length) {
       throw new Error(`Os PDFs da movimentação "${movement.movement}" não foram encontrados no registro de autuação.`);
     }
-    const parts = Array.isArray(autuation.parts) && autuation.parts.length
-      ? autuation.parts
-      : autuation.files.map((file) => ({
-        file,
-        order: fixedDocumentOutputOrder(getCell(row, layout.movement), getCell(row, layout.document))
-      }));
+    const hasParts = Array.isArray(autuation.parts) && autuation.parts.length > 0;
+    const parts = autuationRecordParts(autuation);
+    if (!hasParts) {
+      const baseOrder = fixedDocumentOutputOrder(getCell(row, layout.movement), getCell(row, layout.document));
+      parts.forEach((part, index) => {
+        part.order = baseOrder + index;
+      });
+    }
     for (const part of parts) {
       const file = part.file;
       const filePath = path.resolve(String(file || ""));
@@ -3485,8 +3950,19 @@ async function generateFinalPdf(config, data, onProgress) {
       if (!fs.existsSync(filePath)) {
         throw new Error(`O PDF autuado para a movimentação "${movement.movement}" não foi encontrado:\n${filePath}`);
       }
+      if (part.fixedPosition === "bookend") {
+        if (certificateTalaoPath && certificateTalaoPath !== filePath) {
+          throw new Error("Há mais de uma Certidão Talão vinculada às autuações parciais.");
+        }
+        certificateTalaoPath = filePath;
+        continue;
+      }
       orderedParts.push([movementIndex, Number(part.order) || 0, filePath]);
     }
+  }
+  if (certificateTalaoPath) {
+    orderedParts.push([Number.MIN_SAFE_INTEGER, 0, certificateTalaoPath]);
+    orderedParts.push([Number.MAX_SAFE_INTEGER, 0, certificateTalaoPath]);
   }
   fs.mkdirSync(pdfsDir, { recursive: true });
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej_pdf_"));
@@ -3494,7 +3970,10 @@ async function generateFinalPdf(config, data, onProgress) {
   const autuatedRowsWithAttachments = new Set(Object.entries(autuacoesMovimentacoes)
     .filter(([rowIndex, autuation]) => autuation.hasAttachments && movementEntries.some((entry) => entry.sourceRow === Number(rowIndex)))
     .map(([rowIndex]) => movementEntries.find((entry) => entry.sourceRow === Number(rowIndex)).movementIndex));
-  const pendingAttachmentSlots = slots.filter((slot) => slot.row_index < 0 || !autuatedRowsWithAttachments.has(Number(slot.row_index)));
+  const pendingAttachmentSlots = slots.filter((slot) => (
+    !(certificateTalaoPath && slot.fixed_position === "bookend")
+    && (slot.row_index < 0 || !autuatedRowsWithAttachments.has(Number(slot.row_index)))
+  ));
   orderedParts.push(...await copyAttachmentPdfs({ slots: pendingAttachmentSlots, context, pdfsDir, tempDir, onProgress }));
   orderedParts.sort((a, b) => a[0] - b[0] || a[1] - b[1] || String(a[2]).localeCompare(String(b[2])));
   const pdfParts = orderedParts.map((item) => item[2]);
@@ -3535,8 +4014,19 @@ async function autuarMovimentacao(config, data, onProgress) {
   }
   const documentName = getCell(entry.row, entry.layout.document)
     || movementDocumentName(entry.movement, previousMovements, config);
+  const inputRequirement = movementInputRequirement(entry.movement, config);
+  const movementInputValues = prepareMovementInputFields(inputRequirement, data.movementData || {});
+  if (inputRequirement && !documentName) {
+    throw new Error(`Configure a certidão da movimentação "${entry.movement}" na lista de movimentações das configurações.`);
+  }
   if (!documentName && !attachmentSlots.length) {
     throw new Error(`Não há documento nem anexos configurados para a movimentação "${entry.movement}".`);
+  }
+  if (Object.keys(movementInputValues).length) {
+    const source = fixedDocumentSource(config, documentName, protocolFolder, path.join(protocolFolder, "Autuação", "PDFs"));
+    if (source.type !== "model") {
+      throw new Error(`A certidão de "${entry.movement}" precisa ser um modelo editável para preencher seus campos.`);
+    }
   }
   const protocolContext = protocolContextFromValues(data, odsPath);
   const autuacaoDir = path.join(protocolFolder, "Autuação");
@@ -3565,28 +4055,27 @@ async function autuarMovimentacao(config, data, onProgress) {
         pdfsDir,
         outputDir: tempDir,
         tempDir,
-        onProgress
+        onProgress,
+        movementInputRequirement: inputRequirement,
+        movementInputData: data.movementData || {}
       });
     }
     const generatedAttachments = await copyAttachmentPdfs({
-      slots: attachmentSlots.map((slot) => ({
-        ...slot,
-        fixed_position: "",
-        optional: false
-      })),
+      slots: attachmentSlots.map((slot) => ({ ...slot, optional: false })),
       context: protocolContext,
       pdfsDir: tempDir,
       tempDir,
-      onProgress
+      onProgress,
+      bookendMode: false
     });
     const generated = [...generatedFixed, ...generatedAttachments];
     if (!generated.length) throw new Error(`Nenhum documento foi gerado para a movimentação "${entry.movement}".`);
     const persisted = [];
     try {
-      for (const [movementOrder, order, stagedFile, requiresSignature] of generated) {
+      for (const [movementOrder, order, stagedFile, requiresSignature, fixedPosition, kind] of generated) {
         const file = uniquePath(path.join(pdfsDir, path.basename(stagedFile)));
         fs.copyFileSync(stagedFile, file);
-        persisted.push([movementOrder, order, file, requiresSignature]);
+        persisted.push([movementOrder, order, file, requiresSignature, fixedPosition, kind]);
         fs.unlinkSync(stagedFile);
       }
     } catch (error) {
@@ -3598,7 +4087,12 @@ async function autuarMovimentacao(config, data, onProgress) {
       signatureFiles: persisted
         .filter(([, , , requiresSignature]) => requiresSignature)
         .map(([, , filePath]) => filePath),
-      parts: persisted.map(([, order, filePath]) => ({ file: filePath, order })),
+      parts: persisted.map(([, order, filePath, , fixedPosition, kind]) => ({
+        file: filePath,
+        order,
+        ...(fixedPosition ? { fixedPosition } : {}),
+        kind: kind || ""
+      })),
       hasAttachments: attachmentSlots.length > 0,
       movement: entry.movement,
       documentName
@@ -4393,12 +4887,20 @@ module.exports = {
   APP_TITLE,
   DEFAULT_CONFIG,
   DEFAULT_MOVEMENT_ATTACHMENT_RULES,
+  DEFAULT_MOVEMENT_INPUT_RULES,
   MOVEMENT_PREFILL_OPTIONS,
   normalizeKey,
+  protocolIsClosed,
   normalizeConfig,
   normalizeMovementDocumentRules,
   normalizeMovementAttachmentRules,
+  normalizeMovementInputRules,
   normalizeMovementPrefillOptions,
+  recoverMovementsFromPdfs,
+  recoverAutuationsFromPdfs,
+  autuationRecordsInMovementOrder,
+  autuationRecordParts,
+  mergeRecoveredAutuations,
   normalizeRtdCostTable,
   rtdCostTableFromWorkbook,
   normalizeWorkbookData,
@@ -4416,6 +4918,7 @@ module.exports = {
   extractRecords,
   analyzeMovements,
   movementAttachmentRequirements,
+  movementInputRequirementForRow,
   movementRequiresOnrSignature,
   createInitialFolder,
   findModelFile,
@@ -4437,6 +4940,8 @@ module.exports = {
   generateFinalPdf,
   generateArispStats,
   addField,
+  addMovementInputFields,
+  prepareMovementInputFields,
   addProtocolFields,
   normalizeSigners,
   resolveSignature,
