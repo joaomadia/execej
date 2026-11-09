@@ -50,6 +50,27 @@ test("saving a protocol that is not linked to the shared folder fails", (t) => {
   );
 });
 
+test("importing a protocol keeps an already-synchronized shared folder", (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-protocol-share-"));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const store = createProtocolShareStore(path.join(tempDir, "rede"));
+  store.initialize();
+  const folderPath = store.protocolFolderPath("protocol-1");
+  fs.mkdirSync(folderPath, { recursive: true });
+  fs.writeFileSync(path.join(folderPath, "protocolo.ods"), "arquivo sincronizado");
+
+  const result = store.importProtocol({
+    id: "protocol-1",
+    officeProtocol: "IN01614027C",
+    prenotation: "40.828",
+    folderPath,
+    odsPath: path.join(folderPath, "protocolo.ods")
+  });
+
+  assert.equal(result.created, true);
+  assert.equal(fs.readFileSync(path.join(folderPath, "protocolo.ods"), "utf8"), "arquivo sincronizado");
+});
+
 test("importing the same office protocol and prenotation does not create duplicates", (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-protocol-share-"));
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));

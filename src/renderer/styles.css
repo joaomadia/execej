@@ -107,6 +107,26 @@ main {
   width: 140px;
   text-align: right;
 }
+.protocol-deadline-countdown {
+  display: inline-block;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.protocol-deadline-countdown.green {
+  color: #17603a;
+  background: #dff3e7;
+}
+.protocol-deadline-countdown.yellow {
+  color: #805400;
+  background: #fff1cc;
+}
+.protocol-deadline-countdown.red {
+  color: #8d1d1d;
+  background: #fee4e2;
+}
 .protocol-closed-badge {
   display: inline-block;
   border-radius: 999px;
@@ -409,6 +429,49 @@ main {
   width: 92px;
   min-width: 92px;
   max-width: 92px;
+}
+
+.sheet-table.movement-sheet-table th.movement-deadline-heading,
+.sheet-table.movement-sheet-table td.movement-deadline-cell {
+  width: 180px;
+  min-width: 180px;
+  max-width: 180px;
+}
+
+.movement-deadline-cell {
+  text-align: center;
+  white-space: normal;
+}
+
+.movement-deadline-countdown,
+.movement-deadline-badge {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.movement-deadline-countdown {
+  color: #234b75;
+  background: #e8f1fb;
+}
+
+.movement-deadline-badge.overdue {
+  color: #8d1d1d;
+  background: #fee4e2;
+}
+
+.movement-deadline-badge.pending {
+  color: #805400;
+  background: #fff1cc;
+}
+
+.movement-deadline-cell small {
+  display: block;
+  margin-top: 3px;
+  color: #667085;
+  font-size: 10px;
 }
 
 .sheet-table.movement-sheet-table td.movement-autuation-cell,

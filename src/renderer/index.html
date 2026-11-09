@@ -161,7 +161,6 @@
           <div class="page-heading">
             <div class="eyebrow">FLUXO DE TRABALHO</div>
             <h2>Protocolos</h2>
-            <p>Conecte a pasta de rede para abrir e salvar os protocolos compartilhados. Os protocolos locais continuam disponíveis no computador e não são copiados ao abrir.</p>
           </div>
           <div class="actions compact-actions">
             <button id="newDraftProtocol" type="button">Novo rascunho</button>
@@ -172,7 +171,7 @@
           <label>Filtrar<input id="protocolSearch" /></label>
           <table id="protocolsTable">
             <thead>
-              <tr><th>Protocolo</th><th>Status</th><th>Situação</th></tr>
+              <tr><th>Protocolo</th><th>Status</th><th>Prazo</th><th>Situação</th></tr>
             </thead>
             <tbody></tbody>
           </table>
@@ -257,6 +256,7 @@
                   <button id="deleteSheetRow" type="button" disabled>Apagar linha</button>
                   <button id="deleteSheetColumn" type="button" disabled>Apagar coluna</button>
                 </div>
+                <p id="movementDeadlineNote" class="muted" hidden>Os prazos são contados de segunda a sexta-feira; feriados não estão incluídos.</p>
                 <div class="sheet-grid-wrap">
                   <div id="protocolSheetCustom" hidden></div>
                   <table id="protocolSheetTable" class="sheet-table"></table>
@@ -279,6 +279,7 @@
       <div class="actions"><button id="createInitial">Criar Pasta Inicial</button></div>
       <label>Pasta criada<input id="initialCreatedFolder" readonly /></label>
       <label>Protocolo criado<input id="initialCreatedProtocol" readonly /></label>
+      <label>Pasta compartilhada<input id="initialSharedFolder" readonly /></label>
     </section>
 
     <section id="note" class="tab">

@@ -460,6 +460,144 @@ function addBusinessDays(date, days) {
   return result;
 }
 
+function deadlineDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  const text = String(value || "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const date = iso
+    ? new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
+    : parseDateValue(text);
+  if (!date || Number.isNaN(date.getTime())) return null;
+  const original = iso
+    ? [Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])]
+    : (() => {
+      const match = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+      if (!match) return [date.getFullYear(), date.getMonth(), date.getDate()];
+      let [, day, month, year] = match.map(Number);
+      if (year < 100) year += 2000;
+      return [year, month - 1, day];
+    })();
+  if (date.getFullYear() !== original[0] || date.getMonth() !== original[1] || date.getDate() !== original[2]) return null;
+  return date;
+}
+
+function businessDaysBetween(startDate, endDate) {
+  const cursor = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  let days = 0;
+  while (cursor < end) {
+    cursor.setDate(cursor.getDate() + 1);
+    if (cursor.getDay() !== 0 && cursor.getDay() !== 6) days += 1;
+  }
+  return days;
+}
+
+function calendarDaysBetween(startDate, endDate) {
+  const start = Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const end = Date.UTC(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  return Math.round((end - start) / 86400000);
+}
+
+function formatDeadlineDate(date) {
+  return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}`;
+}
+
+function movementDeadlineStatuses(rows, autuations = {}, asOfDate = new Date()) {
+  if (!Array.isArray(rows) || !rows.length) return {};
+  const layout = movementLayout(rows);
+  const today = deadlineDate(asOfDate) || deadlineDate(new Date());
+  const entries = [];
+  for (let sourceRow = layout.firstDataIndex; sourceRow < rows.length; sourceRow += 1) {
+    const row = rows[sourceRow];
+    const movement = getCell(row, layout.movement);
+    if (!movement) continue;
+    const autuation = autuations?.[String(sourceRow)];
+    const date = deadlineDate(getCell(row, layout.date)) || deadlineDate(autuation?.autuadoEm);
+    if (!date) continue;
+    entries.push({ sourceRow, movement: autuation?.movement || movement, date, autuated: Boolean(autuation) });
+  }
+  entries.sort((a, b) => a.date - b.date || a.sourceRow - b.sourceRow);
+
+  let activeDeadline = null;
+  let activeDeadlineSourceRow = -1;
+  const statuses = {};
+  const statusSources = {};
+  for (const entry of entries) {
+    if (entry.autuated) {
+      const movement = normalizeForMatch(entry.movement);
+      if (movement === "PRENOTADO" || movement === "PRENOTACAO") {
+        activeDeadlineSourceRow = entry.sourceRow;
+        activeDeadline = {
+          type: "Prenotação",
+          startDate: entry.date,
+          dueDate: addBusinessDays(entry.date, 20)
+        };
+      } else if (movement === "INTIMADO") {
+        activeDeadlineSourceRow = entry.sourceRow;
+        activeDeadline = {
+          type: "Intimação",
+          startDate: entry.date,
+          dueDate: addBusinessDays(entry.date, 15)
+        };
+      } else if (movement === "EXIGENCIA") {
+        activeDeadlineSourceRow = entry.sourceRow;
+        activeDeadline = {
+          type: "Exigência",
+          startDate: entry.date,
+          dueDate: addBusinessDays(entry.date, 30)
+        };
+      } else if (movement.startsWith("TRANSCURSODEPRAZO")) {
+        activeDeadlineSourceRow = entry.sourceRow;
+        activeDeadline = {
+          type: "Transcurso de Prazo",
+          startDate: entry.date,
+          dueDate: addBusinessDays(entry.date, 30)
+        };
+      } else if (movement === "EXIGENCIACUMPRIDA") {
+        activeDeadlineSourceRow = entry.sourceRow;
+        activeDeadline = { type: "Pendente de resposta" };
+      } else if (movement.startsWith("CONSOLIDACAO") || movement.startsWith("DESISTENCIA")) {
+        activeDeadlineSourceRow = -1;
+        activeDeadline = null;
+      }
+    }
+
+    if (!activeDeadline) continue;
+    if (activeDeadline.type === "Pendente de resposta") {
+      statuses[String(entry.sourceRow)] = { kind: "pending-response", label: "Pendente de resposta" };
+      statusSources[String(entry.sourceRow)] = activeDeadlineSourceRow;
+      continue;
+    }
+    const expired = today >= activeDeadline.dueDate;
+    const totalCalendarDays = calendarDaysBetween(activeDeadline.startDate, activeDeadline.dueDate);
+    const daysRemainingCalendar = expired ? 0 : calendarDaysBetween(today, activeDeadline.dueDate);
+    const daysElapsed = Math.max(0, calendarDaysBetween(activeDeadline.startDate, today));
+    statuses[String(entry.sourceRow)] = {
+      kind: "deadline",
+      type: activeDeadline.type,
+      startDate: formatDeadlineDate(activeDeadline.startDate),
+      dueDate: formatDeadlineDate(activeDeadline.dueDate),
+      expired,
+      daysRemaining: expired ? 0 : businessDaysBetween(today, activeDeadline.dueDate),
+      overdueBusinessDays: expired ? businessDaysBetween(activeDeadline.dueDate, today) : 0,
+      totalCalendarDays,
+      daysRemainingCalendar,
+      overdueCalendarDays: expired ? calendarDaysBetween(activeDeadline.dueDate, today) : 0,
+      urgency: expired || daysElapsed * 3 >= totalCalendarDays * 2
+        ? "red"
+        : daysElapsed * 3 >= totalCalendarDays
+        ? "yellow"
+        : "green"
+    };
+    statusSources[String(entry.sourceRow)] = activeDeadlineSourceRow;
+  }
+  return Object.fromEntries(
+    Object.entries(statuses).filter(([rowIndex]) => statusSources[rowIndex] === activeDeadlineSourceRow)
+  );
+}
+
 function datePartsForMovement(movement, dateText) {
   const date = parseDateValue(dateText);
   if (!date) return ["", "", ""];
@@ -2946,7 +3084,72 @@ function firstDataRowFields(odsPath, sheetName) {
   return {};
 }
 
-function createInitialFolder(config, { officeProtocol, prenotation, overwrite = false }) {
+function initialFolderIdentity(folderName) {
+  const normalizedName = folderName.replace(/^Protocolo\s+/i, "");
+  const separator = normalizedName.lastIndexOf(" - ");
+  if (separator < 0) return "";
+  const office = normalizedName.slice(0, separator).trim().toUpperCase().replace(/\s+/g, "");
+  const prenotation = normalizedName.slice(separator + 3).replace(/\D/g, "");
+  return office && prenotation ? `${office}|${prenotation}` : "";
+}
+
+function findExistingInitialFolder(rootPath, folderName, preferredFolder = "") {
+  const expectedIdentity = initialFolderIdentity(folderName);
+  const expectedName = folderName.toLowerCase();
+  const matches = (candidate) => {
+    const candidateName = path.basename(candidate);
+    const candidateIdentity = initialFolderIdentity(candidateName);
+    return expectedIdentity
+      ? candidateIdentity.toLowerCase() === expectedIdentity.toLowerCase()
+      : candidateName.toLowerCase() === expectedName;
+  };
+  const isDirectory = (candidate) => {
+    try {
+      return fs.statSync(candidate).isDirectory();
+    } catch (error) {
+      if (["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code)) return false;
+      throw error;
+    }
+  };
+
+  if (preferredFolder && matches(preferredFolder) && isDirectory(preferredFolder)) return path.resolve(preferredFolder);
+
+  const roots = [
+    { path: path.resolve(rootPath), maxDepth: 2 },
+    { path: path.dirname(path.resolve(rootPath)), maxDepth: 3 }
+  ];
+  const visited = new Set();
+  for (const root of roots) {
+    const visit = (directory, depth) => {
+      const resolved = path.resolve(directory);
+      const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+      if (visited.has(key) || !isDirectory(resolved)) return "";
+      visited.add(key);
+      let entries;
+      try {
+        entries = fs.readdirSync(resolved, { withFileTypes: true });
+      } catch (error) {
+        if (["ENOENT", "ENOTDIR", "EACCES", "EPERM"].includes(error.code)) return "";
+        throw error;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const candidate = path.join(resolved, entry.name);
+        if (matches(candidate)) return candidate;
+        if (depth > 1) {
+          const nested = visit(candidate, depth - 1);
+          if (nested) return nested;
+        }
+      }
+      return "";
+    };
+    const found = visit(root.path, root.maxDepth);
+    if (found) return found;
+  }
+  return "";
+}
+
+function createInitialFolder(config, { officeProtocol, prenotation, overwrite = false, existingFolder = "" }) {
   if (!config.initial_folder_root) throw new Error("Configure a pasta raiz inicial.");
   if (!config.base_protocol_template) throw new Error("Configure o arquivo base do protocolo ODS.");
   let office = String(officeProtocol || "").trim().toUpperCase().replace(/\s+/g, "");
@@ -2955,8 +3158,20 @@ function createInitialFolder(config, { officeProtocol, prenotation, overwrite = 
   const pren = String(prenotation || "").trim();
   if (!pren) throw new Error("Informe a Prenotação WebRI.");
   const folderName = `${safeFilename(office, "IN")} - ${safeFilename(pren, "prenotacao")}`;
-  const target = path.join(config.initial_folder_root, folderName);
-  const protocolFile = path.join(target, `Protocolo ${folderName}.ods`);
+  const existingTarget = findExistingInitialFolder(config.initial_folder_root, folderName, existingFolder);
+  const target = existingTarget
+    || path.join(config.initial_folder_root, folderName);
+  const expectedIdentity = initialFolderIdentity(folderName);
+  const expectedOdsName = `Protocolo ${folderName}.ods`.toLowerCase();
+  const matchingOds = existingTarget
+    ? fs.readdirSync(existingTarget, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".ods")
+      .map((entry) => path.join(existingTarget, entry.name))
+      .find((filePath) => expectedIdentity
+        ? initialFolderIdentity(path.basename(filePath, path.extname(filePath))).toLowerCase() === expectedIdentity.toLowerCase()
+        : path.basename(filePath).toLowerCase() === expectedOdsName)
+    : "";
+  const protocolFile = matchingOds || path.join(target, `Protocolo ${folderName}.ods`);
   for (const folder of ["Entrada", "Não entra no processo", path.join("Primeira Carta de Notificação", "Anexos")]) {
     fs.mkdirSync(path.join(target, folder), { recursive: true });
   }
@@ -4912,6 +5127,7 @@ module.exports = {
   formatDateLong,
   formatDateForDocument,
   fileDateFromText,
+  movementDeadlineStatuses,
   formatPrenotation,
   listOdsSheets,
   readOdsSheet,

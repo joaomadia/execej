@@ -46,6 +46,10 @@ function createProtocolShareStore(rootPath) {
     return path.join(protocolDirectory(id), "protocolo.json");
   }
 
+  function protocolFolderPath(id) {
+    return path.join(protocolDirectory(id), "Pasta");
+  }
+
   function hasProtocol(id) {
     ensureAvailable();
     return fs.existsSync(protocolFile(id));
@@ -125,7 +129,7 @@ function createProtocolShareStore(rootPath) {
       }
 
       const directory = protocolDirectory(protocol.id);
-      fs.mkdirSync(directory);
+      fs.mkdirSync(directory, { recursive: true });
       try {
         return { created: true, updated: false, protocol: writeProtocol(path.join(directory, "protocolo.json"), protocol) };
       } catch (error) {
@@ -154,6 +158,7 @@ function createProtocolShareStore(rootPath) {
   return {
     root,
     initialize,
+    protocolFolderPath,
     hasProtocol,
     listProtocols,
     findProtocolByIdentity,

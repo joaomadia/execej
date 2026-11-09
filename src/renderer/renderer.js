@@ -2,6 +2,9 @@ let config = {};
 let currentProtocol = "";
 let protocols = [];
 let selectedProtocolId = "";
+let protocolListDeadlines = new Map();
+let protocolDeadlineRequestId = 0;
+let lastProtocolDeadlineRefreshDate = "";
 let selectedProtocolSheetName = "";
 let selectedProtocolSheetRow = -1;
 let selectedProtocolSheetColumn = -1;
@@ -14,6 +17,7 @@ let protocolAutosavePromise = Promise.resolve();
 let protocolFileRefreshTimer = null;
 let activeAutuationPreviewId = "";
 let autuationPreviewRequestId = 0;
+let movementDeadlineRequestId = 0;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -1393,6 +1397,7 @@ function readProtocolForm() {
     prenotation: $("#protocolPrenotation").value.trim(),
     odsPath: $("#protocolOds").value.trim(),
     folderPath: $("#protocolFolder").value.trim(),
+    sharedFolderPath: current?.sharedFolderPath || "",
     autuacoesMovimentacoes: current?.autuacoesMovimentacoes || {},
     sheetOrder: workbook.sheetOrder,
     sheets: workbook.sheets
@@ -1424,6 +1429,7 @@ function performProtocolAutosave() {
       selectedProtocolId = saved.id;
       setProtocolAutosaveStatus("Salvo automaticamente", "saved");
       renderProtocols();
+      refreshProtocolListDeadlines().catch((error) => log(error.message || String(error)));
     } catch (error) {
       setProtocolAutosaveStatus("Falha ao salvar automaticamente", "error");
       log(error.message || String(error));
@@ -1780,27 +1786,78 @@ function renderProtocols() {
     const row = document.createElement("tr");
     const labelCell = document.createElement("td");
     const statusCell = document.createElement("td");
+    const deadlineCell = document.createElement("td");
     const situationCell = document.createElement("td");
     labelCell.textContent = label;
     statusCell.textContent = protocol.status || "Rascunho";
+    const deadline = protocolListDeadlines.get(protocol.id);
+    if (deadline?.kind === "pending-response") {
+      deadlineCell.textContent = deadline.label;
+    } else if (deadline?.kind === "deadline") {
+      const badge = document.createElement("span");
+      badge.className = `protocol-deadline-countdown ${deadline.urgency}`;
+      if (deadline.expired) {
+        badge.textContent = deadline.overdueCalendarDays === 0
+          ? "Vence hoje"
+          : `Vencido há ${deadline.overdueCalendarDays} ${deadline.overdueCalendarDays === 1 ? "dia" : "dias"}`;
+      } else {
+        badge.textContent = `${deadline.daysRemainingCalendar} ${deadline.daysRemainingCalendar === 1 ? "dia" : "dias"}`;
+      }
+      deadlineCell.title = `${deadline.type}: Vencimento em ${deadline.dueDate}`;
+      deadlineCell.appendChild(badge);
+    }
     if (protocol.closed) {
       const badge = document.createElement("span");
       badge.className = "protocol-closed-badge";
       badge.textContent = "Encerrado";
       situationCell.appendChild(badge);
     }
-    row.append(labelCell, statusCell, situationCell);
+    row.append(labelCell, statusCell, deadlineCell, situationCell);
     row.classList.toggle("selected", protocol.id === selectedProtocolId);
     row.addEventListener("click", () => openProtocol(protocol.id));
     body.appendChild(row);
   }
 }
 
+function localDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+async function refreshProtocolListDeadlines() {
+  const requestId = ++protocolDeadlineRequestId;
+  const asOfDate = localDateKey();
+  const nextDeadlines = new Map();
+  await Promise.all(protocols.map(async (protocol) => {
+    const sheetName = protocolSheetNames(protocol).find((name) => protocolSheetKey(name) === "MOVIMENTACOES");
+    if (!sheetName) {
+      nextDeadlines.set(protocol.id, null);
+      return;
+    }
+    try {
+      const statuses = await window.execej.movementDeadlineStatuses({
+        rows: removeBlankHeaderColumns(sheetName, protocol.sheets?.[sheetName] || [[]]),
+        autuations: protocol.autuacoesMovimentacoes || {},
+        asOfDate
+      });
+      nextDeadlines.set(protocol.id, Object.values(statuses)[0] || null);
+    } catch (error) {
+      log(`Não foi possível calcular o prazo de ${protocolDisplayLabel(protocol)}: ${error.message || String(error)}`);
+      nextDeadlines.set(protocol.id, protocolListDeadlines.get(protocol.id) || null);
+    }
+  }));
+  if (requestId !== protocolDeadlineRequestId) return;
+  protocolListDeadlines = nextDeadlines;
+  lastProtocolDeadlineRefreshDate = asOfDate;
+  renderProtocols();
+}
+
 async function refreshProtocolShareStatus() {
   const status = await window.execej.protocolShareStatus();
   const label = $("#protocolShareStatus");
   if (!label) return;
-  label.textContent = status.configured
+  label.textContent = status.syncError
+    ? `Falha na sincronização das pastas: ${status.syncError}`
+    : status.configured
     ? `Pasta pública: ${status.root}`
     : "Compartilhamento ainda não configurado. Conecte a pasta pública de rede para acessar os protocolos compartilhados.";
 }
@@ -1808,6 +1865,7 @@ async function refreshProtocolShareStatus() {
 async function reloadProtocols(selectId = selectedProtocolId) {
   protocols = await window.execej.listProtocols();
   renderProtocols();
+  refreshProtocolListDeadlines().catch((error) => log(error.message || String(error)));
   await refreshProtocolShareStatus();
   if (selectId && protocols.some((protocol) => protocol.id === selectId)) selectProtocol(selectId);
   else if (selectedProtocolId && !protocols.some((protocol) => protocol.id === selectedProtocolId)) clearSelectedProtocol();
@@ -2115,6 +2173,8 @@ function renderProtocolSheetTable() {
   const movementColumnIndex = isMovementSheet
     ? Math.max(0, (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "MOVIMENTACAO"))
     : -1;
+  const deadlineNote = $("#movementDeadlineNote");
+  if (deadlineNote) deadlineNote.hidden = !isMovementSheet;
   const movementDateColumnIndex = isMovementSheet
     ? Math.max(movementColumnIndex + 1, (rows[headerRowIndex] || []).findIndex((header) => normalizeUiKey(header) === "DATA"))
     : -1;
@@ -2122,6 +2182,11 @@ function renderProtocolSheetTable() {
     ? [movementColumnIndex, movementDateColumnIndex]
     : visibleColumns;
   table.classList.toggle("movement-sheet-table", isMovementSheet);
+  if (isMovementSheet) {
+    table.title = "Contagem em dias úteis de segunda a sexta-feira; feriados não estão incluídos.";
+  } else {
+    table.removeAttribute("title");
+  }
   const rowCount = Math.max(rows.length, headerRowIndex + 2);
   table.innerHTML = "";
   const thead = document.createElement("thead");
@@ -2143,6 +2208,11 @@ function renderProtocolSheetTable() {
     headRow.appendChild(th);
   }
   if (isMovementSheet) {
+    const deadlineHeading = document.createElement("th");
+    deadlineHeading.className = "movement-deadline-heading";
+    deadlineHeading.textContent = "Prazo";
+    deadlineHeading.title = "Contagem em dias úteis de segunda a sexta-feira; feriados não estão incluídos.";
+    headRow.appendChild(deadlineHeading);
     const autuationHeading = document.createElement("th");
     autuationHeading.className = "movement-autuation-heading";
     autuationHeading.textContent = "Autuação";
@@ -2179,6 +2249,10 @@ function renderProtocolSheetTable() {
       tr.appendChild(td);
     }
     if (isMovementSheet) {
+      const deadlineCell = document.createElement("td");
+      deadlineCell.className = "movement-deadline-cell";
+      deadlineCell.dataset.deadlineRowIndex = String(rowIndex);
+      tr.appendChild(deadlineCell);
       const autuationCell = document.createElement("td");
       autuationCell.className = "movement-autuation-cell";
       const movementName = String(rows[rowIndex]?.[movementColumnIndex] || "").trim();
@@ -2218,6 +2292,52 @@ function renderProtocolSheetTable() {
   }
   table.append(thead, tbody);
   updateProtocolSheetSelection();
+  if (isMovementSheet) refreshMovementDeadlineCells();
+}
+
+function refreshMovementDeadlineCells() {
+  const protocol = selectedProtocol();
+  if (!protocol || protocolSheetKey(selectedProtocolSheetName) !== "MOVIMENTACOES") return;
+  const protocolId = protocol.id;
+  const sheetName = selectedProtocolSheetName;
+  const requestId = ++movementDeadlineRequestId;
+  const rows = removeBlankHeaderColumns(sheetName, protocol.sheets?.[sheetName] || [[]]);
+  window.execej.movementDeadlineStatuses({
+    rows,
+    autuations: protocol.autuacoesMovimentacoes || {}
+  }).then((statuses) => {
+    if (requestId !== movementDeadlineRequestId
+      || selectedProtocol()?.id !== protocolId
+      || selectedProtocolSheetName !== sheetName) return;
+    for (const cell of $$("#protocolSheetTable .movement-deadline-cell")) {
+      const rowIndex = cell.dataset.deadlineRowIndex;
+      const status = statuses[rowIndex];
+      cell.replaceChildren();
+      cell.title = "";
+      if (!status) continue;
+
+      const badge = document.createElement("span");
+      if (status.kind === "pending-response") {
+        badge.className = "movement-deadline-badge pending";
+        badge.textContent = "Pendente de resposta";
+        cell.title = "Aguardando resposta do cartório após o cumprimento da exigência.";
+      } else if (status.expired) {
+        badge.className = "movement-deadline-badge overdue";
+        badge.textContent = "Verificar Prazo";
+        cell.title = `${status.type} venceu em ${status.dueDate}. Contagem em dias úteis, sem feriados.`;
+      } else {
+        badge.className = "movement-deadline-countdown";
+        badge.textContent = `${status.daysRemaining} dias úteis`;
+        cell.title = `${status.type}: vence em ${status.dueDate}. Contagem em dias úteis, sem feriados.`;
+        cell.appendChild(badge);
+        const dueDate = document.createElement("small");
+        dueDate.textContent = `Vence ${status.dueDate}`;
+        cell.appendChild(dueDate);
+        continue;
+      }
+      cell.appendChild(badge);
+    }
+  }).catch((error) => log(error.message || String(error)));
 }
 
 async function handleMovementAutuation(sourceRowIndex, undo, button) {
@@ -2273,6 +2393,7 @@ async function handleMovementAutuation(sourceRowIndex, undo, button) {
     updateProtocolAutuationLocks(result.protocol);
     setProtocolAutosaveStatus("Salvo automaticamente", "saved");
     renderProtocols();
+    refreshProtocolListDeadlines().catch((error) => log(error.message || String(error)));
     renderProtocolSheetTable();
     scheduleProtocolFileRefresh();
     if (result.imageExportWarning) {
@@ -2421,6 +2542,7 @@ async function saveCurrentProtocolSilently() {
   else protocols.unshift(saved);
   selectedProtocolId = saved.id;
   setProtocolAutosaveStatus("Salvo automaticamente", "saved");
+  refreshProtocolListDeadlines().catch((error) => log(error.message || String(error)));
 }
 
 async function createDraftProtocol() {
@@ -2985,10 +3107,17 @@ function initInitialFolder() {
     const result = await run("Pasta inicial criada.", () => window.execej.createInitialFolder({
       officeProtocol: $("#initialOfficeProtocol").value.trim(),
       prenotation: $("#initialPrenotation").value.trim(),
+      protocolId: selectedProtocol()?.id || "",
       overwrite: $("#initialOverwrite").checked
     }));
     $("#initialCreatedFolder").value = result.folder;
     $("#initialCreatedProtocol").value = result.protocolFile;
+    $("#initialSharedFolder").value = result.sharedFolder || "";
+    if (result.protocol) {
+      await reloadProtocols(result.protocol.id);
+      scheduleProtocolFileRefresh();
+      return;
+    }
     if (selectedProtocol()) {
       const saved = await window.execej.saveProtocol({
         ...readProtocolForm(),
@@ -3036,6 +3165,15 @@ async function main() {
   initPdfA();
   initUpdates();
   refreshSignatureControls();
+  setInterval(refreshMovementDeadlineCells, 60000);
+  setInterval(() => {
+    if (localDateKey() !== lastProtocolDeadlineRefreshDate) {
+      refreshProtocolListDeadlines().catch((error) => log(error.message || String(error)));
+    }
+  }, 60000);
+  setInterval(() => {
+    refreshProtocolShareStatus().catch((error) => log(error.message || String(error)));
+  }, 10000);
 }
 
 main().catch((error) => {

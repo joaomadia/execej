@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("execej", {
   protocolShareStatus: () => ipcRenderer.invoke("protocols:shareStatus"),
   connectProtocolShare: () => ipcRenderer.invoke("protocols:connectShare"),
   inspectProtocolOds: (odsPath) => ipcRenderer.invoke("protocols:inspectOds", odsPath),
+  movementDeadlineStatuses: (payload) => ipcRenderer.invoke("protocols:movementDeadlineStatuses", payload),
   listProtocolFiles: (folderPath) => ipcRenderer.invoke("protocols:listFiles", folderPath),
   pickFile: (options) => ipcRenderer.invoke("dialog:file", { kind: "file", ...options }),
   pickFolder: (options) => ipcRenderer.invoke("dialog:file", { kind: "folder", ...options }),
