@@ -2326,14 +2326,10 @@ function refreshMovementDeadlineCells() {
         badge.textContent = "Verificar Prazo";
         cell.title = `${status.type} venceu em ${status.dueDate}. Contagem em dias úteis, sem feriados.`;
       } else {
-        badge.className = "movement-deadline-countdown";
-        badge.textContent = `${status.daysRemaining} dias úteis`;
-        cell.title = `${status.type}: vence em ${status.dueDate}. Contagem em dias úteis, sem feriados.`;
+        badge.className = `movement-deadline-countdown ${status.urgency}`;
+        badge.textContent = `${status.daysRemainingCalendar} ${status.daysRemainingCalendar === 1 ? "dia" : "dias"}`;
+        cell.title = `${status.type}: vence em ${status.dueDate}. Contagem do prazo em dias úteis; contagem regressiva exibida em dias corridos.`;
         cell.appendChild(badge);
-        const dueDate = document.createElement("small");
-        dueDate.textContent = `Vence ${status.dueDate}`;
-        cell.appendChild(dueDate);
-        continue;
       }
       cell.appendChild(badge);
     }

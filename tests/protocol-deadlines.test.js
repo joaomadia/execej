@@ -83,6 +83,7 @@ test("Intimado counts 15 business days beginning the next day and replaces the b
   assert.equal(statuses["2"].type, "Intimação");
   assert.equal(statuses["2"].dueDate, "27/11/2026");
   assert.equal(statuses["2"].daysRemaining, 14);
+  assert.equal(statuses["2"].daysRemainingCalendar, 18);
   assert.equal(movementDeadlineStatuses(rows, autuations([2, "Intimado", "2026-11-06"]), "2026-11-27")["2"].expired, true);
 });
 

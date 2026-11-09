@@ -1,7 +1,7 @@
 {
   "name": "execej",
   "productName": "EXECEJ",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "Aplicativo gerado por App Packager Studio",
   "main": "src/main.js",
   "scripts": {
