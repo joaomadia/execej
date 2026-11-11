@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const childProcess = require("child_process");
 const { pathToFileURL } = require("url");
 const AdmZip = require("adm-zip");
-const { PDFArray, PDFDocument, PDFName, degrees } = require("pdf-lib");
+const { PDFArray, PDFDocument, PDFName, StandardFonts, degrees, rgb } = require("pdf-lib");
 const { PDFParse } = require("pdf-parse");
 
 const APP_TITLE = "EXECEJ";
@@ -3422,6 +3422,29 @@ async function mergePdfs(pdfPaths, outputPath) {
   fs.writeFileSync(outputPath, await merged.save());
 }
 
+async function numberPdfPages(pdfPaths) {
+  let pageNumber = 1;
+  for (const pdfPath of pdfPaths) {
+    const document = await PDFDocument.load(fs.readFileSync(pdfPath));
+    const font = await document.embedFont(StandardFonts.Helvetica);
+    for (const page of document.getPages()) {
+      const label = String(pageNumber);
+      const fontSize = 10;
+      const margin = 24;
+      const { width, height } = page.getSize();
+      page.drawText(label, {
+        x: width - margin - font.widthOfTextAtSize(label, fontSize),
+        y: height - margin,
+        size: fontSize,
+        font,
+        color: rgb(0, 0, 0)
+      });
+      pageNumber += 1;
+    }
+    fs.writeFileSync(pdfPath, await document.save());
+  }
+}
+
 async function createAutuationPreview(autuacoesMovimentacoes, protocolFolder, outputDir, filename = "visualizacao-autuacoes.pdf") {
   const pdfsDir = path.resolve(protocolFolder, "Autuação", "PDFs");
   const records = autuationRecordsInMovementOrder(autuacoesMovimentacoes)
@@ -4285,6 +4308,8 @@ async function autuarMovimentacao(config, data, onProgress) {
     });
     const generated = [...generatedFixed, ...generatedAttachments];
     if (!generated.length) throw new Error(`Nenhum documento foi gerado para a movimentação "${entry.movement}".`);
+    const orderedGenerated = [...generated].sort((a, b) => a[0] - b[0] || a[1] - b[1] || String(a[2]).localeCompare(String(b[2])));
+    await numberPdfPages(orderedGenerated.map(([, , filePath]) => filePath));
     const persisted = [];
     try {
       for (const [movementOrder, order, stagedFile, requiresSignature, fixedPosition, kind] of generated) {

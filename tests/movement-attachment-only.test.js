@@ -4,13 +4,69 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { PDFDocument } = require("pdf-lib");
+const { PDFParse } = require("pdf-parse");
 const core = require("../src/core");
 
-async function createPdf(filePath) {
+async function createPdf(filePath, pageCount = 1) {
   const document = await PDFDocument.create();
-  document.addPage();
+  for (let index = 0; index < pageCount; index += 1) document.addPage();
   fs.writeFileSync(filePath, await document.save());
 }
+
+async function extractPdfText(filePath) {
+  const parser = new PDFParse({ data: fs.readFileSync(filePath) });
+  try {
+    return (await parser.getText()).pages.map((page) => page.text);
+  } finally {
+    await parser.destroy();
+  }
+}
+
+test("numbers pages of each partial autuation continuously in attachment order", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-attachment-page-numbers-"));
+  try {
+    const protocolFolder = path.join(tempDir, "protocol");
+    const odsPath = path.join(tempDir, "protocol.ods");
+    const firstAttachment = path.join(tempDir, "first.pdf");
+    const secondAttachment = path.join(tempDir, "second.pdf");
+    fs.mkdirSync(protocolFolder);
+    await createPdf(firstAttachment, 2);
+    await createPdf(secondAttachment);
+    core.writeWorkbookOds(odsPath, {
+      sheetOrder: ["Movimentações"],
+      sheets: {
+        "Movimentações": [
+          ["", "PROTOCOLO:", "", "", "", "", ""],
+          ["", "MOVIMENTAÇÃO", "DATA", "DIA", "MÊS", "ANO", "NOME ARQUIVO"],
+          ["", "Exigência", "28/10/2026", "28", "outubro", "2026", ""]
+        ]
+      }
+    });
+    const config = {
+      models_folder: path.join(tempDir, "models"),
+      movement_document_rules: [],
+      movement_attachment_rules: [
+        { movement: "Exigência", document: "Documento da exigência", quantity: "1+" }
+      ]
+    };
+    const [requirement] = core.movementAttachmentRequirements(odsPath, "Movimentações", 2, config);
+    const result = await core.autuarMovimentacao(config, {
+      odsPath,
+      sheetName: "Movimentações",
+      sourceRowIndex: 2,
+      protocolFolder,
+      officeProtocol: "IN12345678",
+      prenotation: "12345",
+      attachments: [{ title: requirement.title, files: [firstAttachment, secondAttachment] }]
+    });
+
+    const pageTexts = await Promise.all(result.files.map(extractPdfText));
+    assert.deepEqual(pageTexts.map((pages) => pages.length), [2, 1]);
+    assert.deepEqual(pageTexts.flat().map((text) => text.match(/\b\d+\b/g)), [["1"], ["2"], ["3"]]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
 test("autuates attachment-only movements without requiring a fixed document", async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "execej-attachment-only-"));

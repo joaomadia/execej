@@ -828,6 +828,7 @@ function editableProtocolSheetColumns(sheetName, rows) {
     const header = headers[colIndex] || "";
     const headerKey = normalizeUiKey(header);
     if (sheetKey === "EXTRACAO_DE_ARQUIVOS" && headerKey === "PRENOTACAO" && !String(header).includes("?")) continue;
+    if (sheetKey === "EXTRACAO_DE_ARQUIVOS" && /^CAMPO_ADICIONAL(?:_\d+)?$/.test(headerKey)) continue;
     if (header && hidden.has(normalizeUiKey(header))) continue;
     columns.push(colIndex);
   }
